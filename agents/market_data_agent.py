@@ -14,8 +14,12 @@ class TickerDataError(Exception):
     """Raised when price data for a ticker cannot be retrieved."""
 
 
-def get_price_data(ticker: str, lookback_days: int = 60) -> pd.DataFrame:
+def get_price_data(ticker: str, lookback_days: int = 120) -> pd.DataFrame:
     """Fetch OHLCV data for `ticker` over the trailing `lookback_days`.
+
+    Default of 120 calendar days leaves enough trading days for a stable
+    50-day SMA (technical_agent needs 52+ rows) after accounting for
+    weekends/holidays.
 
     Retries with exponential backoff on transient/rate-limit failures.
     Raises TickerDataError for invalid or delisted tickers (empty result
