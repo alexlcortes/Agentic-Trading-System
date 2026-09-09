@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LLM_API_KEY = os.getenv("LLM_API_KEY")
-LLM_ENDPOINT = os.getenv("LLM_ENDPOINT")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")

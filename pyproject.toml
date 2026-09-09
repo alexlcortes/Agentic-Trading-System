@@ -12,5 +12,6 @@ dependencies = [
     "openai>=3.11.0",
     "pandas>=3.0.5",
     "python-dotenv>=1.2.3",
+    "tavily-python>=0.8.1",
     "yfinance>=1.7.0",
 ]
