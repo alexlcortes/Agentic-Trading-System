@@ -46,4 +46,16 @@ A design tradeoff worth naming from this file specifically: the kill switch and 
 
 ---
 
-*(More patterns will be added here as later phases — the portfolio manager's re-validation of LLM output, the human-approval gate — surface new ones worth naming.)*
+## 5. Re-check the decision that actually happened, not the one you expected
+
+**Where:** `orchestration/graph.py` (`risk_precheck` vs. `risk_final_check`)
+
+Phase 4's portfolio manager is handed a risk ceiling computed *before* it decides anything — the risk manager doesn't yet know what the LLM will pick, so it checks a "maximal candidate" trade (e.g. "what if this goes to a full-size buy?") just to give the LLM an informed number to stay under. But `check_trade`'s math for a buy and a sell are completely different (position-limit room vs. capped-at-what-you-hold), so if the LLM ends up proposing a different action than what was pre-checked, that ceiling means nothing for the actual decision.
+
+The fix is to run the deterministic check twice: once *before* the LLM call (to inform its prompt), and once *after* (to gate execution) — against whatever the LLM actually decided, not the placeholder used to build its prompt. The second check is the only one that's authoritative; if it disapproves, the decision is overridden to `hold` in code, and if it merely resizes, the decision's `size_pct` is clamped to match.
+
+**Why it matters:** this generalizes pattern #4 (keep the highest-stakes decision out of the model's hands) to a subtler failure mode — it's not enough to have a deterministic gate *somewhere* in the pipeline; the gate has to run against the decision that will actually be executed, not a stand-in for it. A safety check that validates the wrong object gives you the appearance of a guarantee without the substance of one.
+
+---
+
+*(More patterns will be added here as later phases — audit logging, backtesting — surface new ones worth naming.)*
