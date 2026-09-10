@@ -20,12 +20,13 @@ decided on, since a buy-sized ceiling isn't meaningful if the LLM ends up
 proposing a sell (or vice versa). See PROMPT_PATTERNS.md and
 agents/portfolio_manager.py's docstring for the full reasoning.
 
-Phase 6 (execution/alpaca_executor.py) and Phase 7 (logs/audit_logger.py)
-don't exist yet — the `execution` and `log_and_end` nodes here are
-placeholder hooks that print what would happen, ready to be swapped for
-the real implementations without changing the graph's shape.
+Every run appends one entry to logs/trades.jsonl via log_and_end_node,
+including runs that end in a hold or a rejection — not just executed
+trades.
 """
 
+import uuid
+from datetime import datetime, timezone
 from typing import Optional, TypedDict
 
 import pandas as pd
@@ -38,9 +39,11 @@ from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
 from config.settings import RiskLimits
+from logs.audit_logger import log_decision
 
 
 class TradingState(TypedDict, total=False):
+    run_id: str
     ticker: str
     portfolio_state: dict  # {"equity", "open_positions", "daily_realized_pnl"} — caller-supplied
     risk_limits: RiskLimits
@@ -211,19 +214,23 @@ def execution_node(state: TradingState) -> dict:
 
 
 def log_and_end_node(state: TradingState) -> dict:
-    print("\n=== Decision log ===")
-    print(f"ticker:            {state.get('ticker')}")
-    print(f"technical_signal:  {state.get('technical_signal')}")
-    print(f"sentiment_signal:  {state.get('sentiment_signal')}")
-    print(f"risk_check:        {state.get('risk_check')}")
-    print(f"risk_check_final:  {state.get('risk_check_final')}")
-    print(f"portfolio_decision:{state.get('portfolio_decision')}")
-    print(f"human_gate_note:   {state.get('human_gate_note')}")
-    print(f"execution_result:  {state.get('execution_result')}")
-    print(
-        "[NOTE] logs/audit_logger.py not yet built (Phase 7) — this print "
-        "will be replaced with a persisted JSONL entry via log_decision()."
+    agent_outputs = {
+        "technical_signal": state.get("technical_signal"),
+        "sentiment_signal": state.get("sentiment_signal"),
+        "fundamentals_signal": state.get("fundamentals_signal"),
+        "risk_check": state.get("risk_check"),
+        "risk_check_final": state.get("risk_check_final"),
+        "human_gate_note": state.get("human_gate_note"),
+    }
+
+    log_decision(
+        run_id=state["run_id"],
+        timestamp=datetime.now(timezone.utc),
+        agent_outputs=agent_outputs,
+        final_decision=state.get("portfolio_decision"),
+        execution_result=state.get("execution_result"),
     )
+    print(f"\n[log] run {state['run_id']} appended to logs/trades.jsonl")
     return {}
 
 
@@ -267,7 +274,11 @@ def run_trading_cycle(
     ticker: str, portfolio_state: dict, risk_limits: RiskLimits | None = None
 ) -> dict:
     app = build_graph()
-    initial_state: TradingState = {"ticker": ticker, "portfolio_state": portfolio_state}
+    initial_state: TradingState = {
+        "run_id": uuid.uuid4().hex,
+        "ticker": ticker,
+        "portfolio_state": portfolio_state,
+    }
     if risk_limits is not None:
         initial_state["risk_limits"] = risk_limits
     return app.invoke(initial_state)

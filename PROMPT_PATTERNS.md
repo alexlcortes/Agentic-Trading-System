@@ -68,4 +68,14 @@ Alpaca's SDK wants a `paper: bool` flag and, separately, a base URL. It would be
 
 ---
 
-*(More patterns will be added here as later phases — audit logging, backtesting — surface new ones worth naming.)*
+## 7. Log the reasoning for every run, not just the trades
+
+**Where:** `logs/audit_logger.py` (`log_decision`), called from every path through `orchestration/graph.py`'s `log_and_end_node`
+
+It would be tempting to only log when a trade actually executes — that's the "interesting" outcome, after all. Instead, every single graph run appends an entry: a hold because technicals were mixed, a rejection because the kill switch was on, a human declining at the gate. Same schema every time — full agent reasoning, not just the final action.
+
+**Why it matters:** the question you'll actually ask, staring at a trade that looks wrong six months from now, is usually "why *didn't* it also do X" as often as "why did it do Y" — and that question is unanswerable if the do-nothing runs were never recorded. This is also a debugging tool, not just a compliance artifact: if the technical agent's signal quietly degrades over time (a data source going stale, a model update subtly changing its calibration), the only way you'd ever notice is by being able to read back *every* run's reasoning, including the boring ones.
+
+---
+
+*(More patterns will be added here as later phases — backtesting — surface new ones worth naming.)*
