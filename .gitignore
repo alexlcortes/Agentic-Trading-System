@@ -14,6 +14,10 @@ wheels/
 
 # Runtime logs
 logs/*.jsonl
+logs/*.log
 
 # macOS
 .DS_Store
+
+# Kill switch sentinel (operational state, not code)
+/KILL_SWITCH

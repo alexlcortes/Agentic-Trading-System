@@ -78,4 +78,27 @@ It would be tempting to only log when a trade actually executes — that's the "
 
 ---
 
-*(More patterns will be added here as later phases — backtesting — surface new ones worth naming.)*
+## 8. Some agents can't be backtested honestly — say so, don't fake it
+
+**Where:** `backtest/runner.py` (`NEUTRAL_SENTIMENT_STUB`)
+
+`agents/sentiment_agent.py` and `agents/fundamentals_agent.py` both depend on "what's true right now" data sources — Tavily news search, yfinance's `.info` — with no way to ask either for a historical point-in-time answer. Calling them for a simulated day in March 2025 would actually fetch September 2026's headlines, silently leaking future information into a "past" decision (lookahead bias). The backtest replaces sentiment with an explicit stub carrying `confidence: 0.0` (not a fabricated `0.5` "neutral" reading) and reasoning that states plainly why it's stubbed, and omits fundamentals entirely.
+
+**Why it matters:** the tempting failure mode here isn't a crash, it's a backtest that runs cleanly and reports a plausible-looking number — total return, a win rate, a drawdown — while silently having validated something other than what you think it validated. A stubbed input that's clearly labeled as stubbed keeps the backtest's scope honest: this backtest tells you whether the technical-signal + risk-manager side of the strategy works, and explicitly does not tell you whether sentiment adds value. Pretending otherwise would be worse than not backtesting at all, because a wrong number with false confidence is more dangerous than an acknowledged gap.
+
+---
+
+## 9. A safeguards checklist has to prove each item fires, not just that the code exists
+
+**Where:** Phase 10's audit of `agents/risk_manager.py` and `backtest/runner.py`
+
+Going through the brief's pre-live-capital checklist item by item surfaced two real, latent gaps that had survived every prior phase's testing:
+
+1. The kill switch (`settings.kill_switch`) was read once from an env var at process start. It genuinely does halt trading — but only starting with the *next* process launch, not inside a process already mid-run. Nothing prior had ever tested "flip it while something is running," because nothing had a reason to — Phase 3's tests all set the flag *before* calling `check_trade`, never *during*.
+2. `backtest/runner.py` had hardcoded `daily_realized_pnl: 0.0` since Phase 8, meaning the daily-loss circuit breaker had never once fired through an actual backtest run, despite every prior report claiming the backtest "ran cleanly." It ran cleanly because nothing ever gave it a reason not to — a different thing entirely from having been tested.
+
+**Why it matters:** both gaps are invisible from reading the code in isolation — `check_trade`'s kill-switch check looks correct, and it is correct, for the case anyone had actually exercised. A checklist that just asks "does this exist in the code" would have checked both boxes. The version that catches real gaps asks "show me it actually firing, right now, through the real path" — which is exactly why this phase added a live file-based kill switch (checked fresh every call, not cached, so it works mid-run) and made the backtest track real day-over-day P&L instead of a hardcoded zero, then proved the halt fires by deliberately forcing it with an artificially tight threshold against real data.
+
+---
+
+*(More patterns will be added here as later phases — going live — surface new ones worth naming.)*

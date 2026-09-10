@@ -38,6 +38,32 @@ def _get_client() -> TradingClient:
     )
 
 
+def get_portfolio_state() -> dict:
+    """Fetch real account state from Alpaca, shaped to match check_trade's
+    portfolio_state contract: {"equity", "open_positions", "daily_realized_pnl"}.
+
+    daily_realized_pnl is approximated as equity - last_equity (Alpaca's
+    equity as of the previous session's close) — this is actually equity
+    *change* since yesterday's close (realized + unrealized), not a pure
+    realized-only figure, since Alpaca doesn't expose one directly. This
+    is the more protective choice for a daily-loss circuit breaker: an
+    account down today on paper losses should still trip the halt, not
+    just one down on closed trades.
+    """
+    client = _get_client()
+    account = client.get_account()
+    positions = client.get_all_positions()
+
+    equity = float(account.equity)
+    last_equity = float(account.last_equity)
+
+    return {
+        "equity": equity,
+        "open_positions": {p.symbol: float(p.market_value) for p in positions},
+        "daily_realized_pnl": equity - last_equity,
+    }
+
+
 def submit_order(ticker: str, side: str, qty: float) -> dict:
     """Submit a market order and poll until it reaches a terminal state.
 

@@ -17,8 +17,17 @@ Contract:
     }
 
 Design notes (read before changing this file):
-    - kill_switch is read live from config.settings at call time, not cached,
-      so flipping it externally takes effect on the very next call.
+    - Two independent kill-switch mechanisms, both checked fresh on every
+      call (never cached): settings.kill_switch (the KILL_SWITCH env var)
+      and a KILL_SWITCH_FILE sentinel file. The env var is read once at
+      process start, so it only takes effect on the NEXT process launch —
+      fine for a fresh daily cron run, but it cannot halt a process
+      already mid-run. The sentinel file exists specifically for that
+      case: its existence is checked live from disk on every single call,
+      so creating agentic-trading-system/KILL_SWITCH halts execution
+      immediately, even mid-loop in an already-running process (e.g.
+      run_daily.py partway through its watchlist). Delete the file to
+      resume.
     - Both the kill switch and the daily-loss halt block ALL actions,
       including sells. This is a deliberate but debatable choice: you could
       argue a sell should still be allowed during a halt, since closing a
@@ -31,10 +40,17 @@ Design notes (read before changing this file):
       than you own).
 """
 
+from pathlib import Path
+
 from config import settings
 from config.settings import RiskLimits
 
 VALID_ACTIONS = ("buy", "sell", "hold")
+
+# Checked fresh (os-level existence check, never cached) on every check_trade
+# call — create this file to halt trading immediately, even mid-run in an
+# already-running process; delete it to resume.
+KILL_SWITCH_FILE = Path(__file__).parent.parent / "KILL_SWITCH"
 
 
 def _validate_proposed_trade(proposed_trade: dict) -> None:
@@ -62,7 +78,15 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
         return {
             "approved": False,
             "adjusted_size": 0.0,
-            "reasons": ["kill switch is active — all trading halted"],
+            "reasons": ["kill switch (KILL_SWITCH env var) is active — all trading halted"],
+        }
+    if KILL_SWITCH_FILE.exists():
+        return {
+            "approved": False,
+            "adjusted_size": 0.0,
+            "reasons": [
+                f"kill switch file ({KILL_SWITCH_FILE.name}) is present — all trading halted"
+            ],
         }
 
     if equity <= 0:
