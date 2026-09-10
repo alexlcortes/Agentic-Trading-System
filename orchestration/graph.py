@@ -187,7 +187,26 @@ def execution_node(state: TradingState) -> dict:
             }
         }
 
-    result = submit_order(decision["ticker"], decision["action"], qty=None)
+    # size_pct -> shares, using the latest close as a sizing approximation
+    # (the market order itself will fill at the actual current price).
+    latest_price = float(state["price_data"]["Close"].iloc[-1])
+    equity = float(state["portfolio_state"]["equity"])
+    qty = int((decision["size_pct"] * equity) // latest_price)
+
+    if qty <= 0:
+        print(
+            f"[execution] computed qty=0 for {decision['ticker']} "
+            f"(size_pct={decision['size_pct']:.4f} too small at price {latest_price}) "
+            "— skipping order submission."
+        )
+        return {
+            "execution_result": {
+                "status": "skipped_zero_qty",
+                "note": "size_pct rounded down to zero shares at the current price",
+            }
+        }
+
+    result = submit_order(decision["ticker"], decision["action"], qty=qty)
     return {"execution_result": result}
 
 

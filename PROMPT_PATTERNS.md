@@ -58,4 +58,14 @@ The fix is to run the deterministic check twice: once *before* the LLM call (to 
 
 ---
 
+## 6. One setting, not two that can drift apart
+
+**Where:** `execution/alpaca_executor.py` (`_get_client`)
+
+Alpaca's SDK wants a `paper: bool` flag and, separately, a base URL. It would be easy to add a `PAPER_TRADING=true` variable to `.env` alongside `ALPACA_BASE_URL` and pass both through independently — but then there are two settings that both have to agree, and nothing stops someone from setting `ALPACA_BASE_URL` to the live endpoint while `PAPER_TRADING` still says `true`. Instead, `paper` is *derived* from `ALPACA_BASE_URL` itself (`"paper" in ALPACA_BASE_URL.lower()`) — there's only one fact in `.env` to get right, and everything else follows from it.
+
+**Why it matters:** this is the same root idea as the risk manager's kill switch being read live rather than cached — a safety-relevant setting should have exactly one source of truth. Two settings that are supposed to always agree will eventually disagree, usually at the worst possible time (here: routing a live order through code someone believed was still paper-only).
+
+---
+
 *(More patterns will be added here as later phases — audit logging, backtesting — surface new ones worth naming.)*
