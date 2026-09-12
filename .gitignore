@@ -16,6 +16,10 @@ wheels/
 logs/*.jsonl
 logs/*.log
 
+# Pending-order tracking (operational state, not code — see
+# execution/alpaca_executor.py's reconcile_pending_orders)
+logs/pending_orders.json
+
 # macOS
 .DS_Store
 

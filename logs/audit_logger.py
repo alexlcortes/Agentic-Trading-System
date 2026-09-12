@@ -45,3 +45,33 @@ def log_decision(
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+def log_reconciliation(
+    order_id: str,
+    original_run_id: str,
+    ticker: str,
+    resolved_result: dict,
+) -> None:
+    """Append a follow-up entry recording what a previously-queued order
+    actually did (see execution.alpaca_executor.reconcile_pending_orders).
+
+    trades.jsonl is append-only — the original run's execution_result is
+    never rewritten, since it truthfully reflects what was known at the
+    time (a poll still open because the market was closed). The eventual
+    outcome is logged here as its own entry, linked back to that run by
+    order_id/original_run_id, so both the initial and final state stay on
+    the record.
+    """
+    entry = {
+        "type": "reconciliation",
+        "order_id": order_id,
+        "original_run_id": original_run_id,
+        "ticker": ticker,
+        "timestamp": _serialize_timestamp(datetime.now(timezone.utc)),
+        "resolved_execution_result": resolved_result,
+    }
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_PATH, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")

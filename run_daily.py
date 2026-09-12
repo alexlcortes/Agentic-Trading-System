@@ -38,7 +38,8 @@ from pathlib import Path
 
 from config import settings
 from config.settings import RiskLimits
-from execution.alpaca_executor import _get_client, get_portfolio_state
+from execution.alpaca_executor import _get_client, get_portfolio_state, reconcile_pending_orders
+from logs.audit_logger import log_reconciliation
 from orchestration.graph import run_trading_cycle
 
 logging.basicConfig(
@@ -113,6 +114,23 @@ def run_once() -> list[dict]:
             "Running against a LIVE Alpaca endpoint — auto_execute=%s, manual "
             "approval required for every trade.",
             settings.auto_execute,
+        )
+
+    # Confirm what any order queued by a prior run (submitted after close,
+    # see execution/alpaca_executor.py) actually did — checked every run,
+    # regardless of today's market state, since it's resolving a past run's
+    # order, not placing one now.
+    for resolved in reconcile_pending_orders():
+        log_reconciliation(
+            order_id=resolved["order_id"],
+            original_run_id=resolved["run_id"],
+            ticker=resolved["ticker"],
+            resolved_result=resolved["result"],
+        )
+        logger.info(
+            "Reconciled queued order %s for %s (from run %s): status=%s filled_qty=%s",
+            resolved["order_id"], resolved["ticker"], resolved["run_id"],
+            resolved["result"]["status"], resolved["result"]["filled_qty"],
         )
 
     if _get_client().get_clock().is_open:
