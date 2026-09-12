@@ -209,7 +209,10 @@ def execution_node(state: TradingState) -> dict:
             }
         }
 
-    result = submit_order(decision["ticker"], decision["action"], qty=qty, run_id=state["run_id"])
+    result = submit_order(
+        decision["ticker"], decision["action"], qty=qty,
+        run_id=state["run_id"], reference_price=latest_price,
+    )
     return {"execution_result": result}
 
 

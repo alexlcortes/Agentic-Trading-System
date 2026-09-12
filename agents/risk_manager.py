@@ -12,7 +12,11 @@ Contract:
     }
     portfolio_state = {
         "equity": float,                        # total account equity, in dollars
-        "open_positions": {ticker: value, ...}, # current positions, dollar market value
+        "open_positions": {ticker: value, ...}, # filled positions' market value, PLUS any
+                                                 # still-pending buy exposure (see
+                                                 # execution.alpaca_executor.get_portfolio_state) —
+                                                 # this function only ever sees committed dollars,
+                                                 # filled or not
         "daily_realized_pnl": float,            # today's realized P&L in dollars (negative = loss)
     }
 

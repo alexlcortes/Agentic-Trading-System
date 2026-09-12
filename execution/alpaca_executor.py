@@ -69,9 +69,26 @@ def get_portfolio_state() -> dict:
     equity = float(account.equity)
     last_equity = float(account.last_equity)
 
+    open_positions: dict[str, float] = {p.symbol: float(p.market_value) for p in positions}
+
+    # A pending buy (queued_for_next_session, not yet filled) isn't in
+    # Alpaca's positions yet, but it IS committed future exposure — without
+    # this, the risk manager would size a same-ticker buy against only
+    # what's already filled, and two buys could stack past max_position_pct
+    # once the pending one also fills. Valued at the price recorded when it
+    # was submitted (same sizing approximation execution_node already makes
+    # for the initial order — the eventual fill price may differ slightly).
+    for info in _load_pending().values():
+        if info.get("side") != "buy" or info.get("reference_price") is None:
+            continue
+        ticker = info["ticker"]
+        open_positions[ticker] = (
+            open_positions.get(ticker, 0.0) + info["requested_qty"] * info["reference_price"]
+        )
+
     return {
         "equity": equity,
-        "open_positions": {p.symbol: float(p.market_value) for p in positions},
+        "open_positions": open_positions,
         "daily_realized_pnl": equity - last_equity,
     }
 
@@ -142,7 +159,10 @@ def reconcile_pending_orders() -> list[dict]:
     return resolved
 
 
-def submit_order(ticker: str, side: str, qty: float, run_id: str | None = None) -> dict:
+def submit_order(
+    ticker: str, side: str, qty: float,
+    run_id: str | None = None, reference_price: float | None = None,
+) -> dict:
     """Submit a market order and poll until it reaches a terminal state.
 
     Returns a structured result dict, never raises on broker-side failures
@@ -152,9 +172,12 @@ def submit_order(ticker: str, side: str, qty: float, run_id: str | None = None) 
     if order submission itself fails to reach the broker at all.
 
     `run_id` links a resulting queued_for_next_session order back to the
-    run that placed it, for reconcile_pending_orders() to pick up later. It
-    is optional only so this function stays usable from contexts (tests,
-    backtesting) that don't need that tracking.
+    run that placed it, for reconcile_pending_orders() to pick up later.
+    `reference_price` is the price the caller used to size this order (see
+    execution_node in orchestration/graph.py) — stored alongside it so
+    get_portfolio_state() can value a still-pending buy as real exposure
+    before it fills. Both are optional only so this function stays usable
+    from contexts (tests, backtesting) that don't need that tracking.
     """
     if side not in ("buy", "sell"):
         raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
@@ -242,6 +265,7 @@ def submit_order(ticker: str, side: str, qty: float, run_id: str | None = None) 
             "run_id": run_id,
             "side": side,
             "requested_qty": float(qty),
+            "reference_price": reference_price,
         }
         _save_pending(pending)
 
