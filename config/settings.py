@@ -28,7 +28,10 @@ class RiskLimits:
     max_daily_loss_pct: float = 0.02
     max_open_positions: int = 5
     watchlist: list[str] = field(
-        default_factory=lambda: ["AAPL", "MSFT", "SPY", "GOOGL", "JPM", "JNJ", "XOM", "AMZN"]
+        default_factory=lambda: [
+            "AAPL", "MSFT", "SPY", "GOOGL", "JPM", "JNJ", "XOM", "AMZN",
+            "PG", "CAT", "NEE", "V", "UNH",
+        ]
     )
 
 
