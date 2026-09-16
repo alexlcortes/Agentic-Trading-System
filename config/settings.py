@@ -30,7 +30,7 @@ class RiskLimits:
     watchlist: list[str] = field(
         default_factory=lambda: [
             "AAPL", "MSFT", "SPY", "GOOGL", "JPM", "JNJ", "XOM", "AMZN",
-            "PG", "CAT", "NEE", "V", "UNH",
+            "PG", "CAT", "NEE", "V", "UNH", "TTWO", "NTDOY",
         ]
     )
 
