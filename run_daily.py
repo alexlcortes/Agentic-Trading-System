@@ -54,6 +54,20 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_LOG_PATH = Path(__file__).parent / "logs" / "daily_summary.log"
 
+# The launchd job (see scripts/launchd/) is scheduled for 16:30 local time but,
+# unlike cron, launchd catches up a StartCalendarInterval fire that was missed
+# because the machine was asleep — it runs as soon as the machine wakes, even
+# if that's the next morning. This script only ever intends to run "shortly
+# after today's close," so any invocation before market-close hour couldn't
+# be that — it's a stale catch-up for a day that's already gone. Abort rather
+# than trade on yesterday's already-stale daily bar or duplicate the next
+# real scheduled run.
+CATCHUP_CUTOFF_HOUR = 16
+
+
+def _woke_up_too_late() -> bool:
+    return datetime.now().hour < CATCHUP_CUTOFF_HOUR
+
 
 def _startup_safety_check() -> bool:
     """Returns True if this run is against paper (safe to force unattended
@@ -78,12 +92,12 @@ def _startup_safety_check() -> bool:
     return is_paper
 
 
-def _write_summary(entries: list[dict], skipped: bool = False) -> None:
+def _write_summary(entries: list[dict], skip_reason: str | None = None) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     lines = [f"\n=== {timestamp} ==="]
 
-    if skipped:
-        lines.append("Market is currently open — skipping (run this after close).")
+    if skip_reason:
+        lines.append(skip_reason)
     elif not entries:
         lines.append("No tickers processed.")
     else:
@@ -105,6 +119,17 @@ def _write_summary(entries: list[dict], skipped: bool = False) -> None:
 
 
 def run_once() -> list[dict]:
+    if _woke_up_too_late():
+        now = datetime.now()
+        logger.warning(
+            "Started at %s, before the %d:00 catch-up cutoff — this looks like a "
+            "wake-triggered run for a day already missed, not today's scheduled run. "
+            "Aborting; the next regularly scheduled run will pick up normally.",
+            now.strftime("%Y-%m-%d %H:%M"), CATCHUP_CUTOFF_HOUR,
+        )
+        _write_summary([], skip_reason="Woke up past the catch-up cutoff — aborting, too late for today.")
+        return []
+
     is_paper = _startup_safety_check()
 
     if is_paper:
@@ -135,7 +160,7 @@ def run_once() -> list[dict]:
 
     if _get_client().get_clock().is_open:
         logger.info("Market is currently open — skipping this run (schedule it after close).")
-        _write_summary([], skipped=True)
+        _write_summary([], skip_reason="Market is currently open — skipping (run this after close).")
         return []
 
     limits = RiskLimits()
