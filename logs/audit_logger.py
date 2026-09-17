@@ -75,3 +75,29 @@ def log_reconciliation(
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+def log_human_override(
+    run_id: str,
+    ticker: str,
+    requested_size_pct: float,
+    timestamp,
+    result: dict,
+) -> None:
+    """Append an entry recording a human-override request and its outcome
+    (see agents.human_override) — approved, declined, or timed out, and by
+    whom, so a bypassed max_position_pct cap is on the record exactly like
+    every other decision.
+    """
+    entry = {
+        "type": "human_override",
+        "run_id": run_id,
+        "ticker": ticker,
+        "requested_size_pct": requested_size_pct,
+        "timestamp": _serialize_timestamp(timestamp),
+        "result": result,
+    }
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_PATH, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")

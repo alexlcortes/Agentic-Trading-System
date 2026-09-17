@@ -56,6 +56,24 @@ VALID_ACTIONS = ("buy", "sell", "hold")
 # already-running process; delete it to resume.
 KILL_SWITCH_FILE = Path(__file__).parent.parent / "KILL_SWITCH"
 
+# Machine-readable companion to the free-text "reasons" list, so callers
+# (e.g. a human-override flow) can branch on *why* a trade was blocked
+# without parsing prose. Only REASON_MAX_POSITION_PCT is meant to ever be
+# treated as override-eligible by a caller — every other rejection is a
+# hard stop (kill switch, daily loss halt, position-count limit, etc.)
+# and should never be offered for override.
+REASON_KILL_SWITCH_ENV = "kill_switch_env"
+REASON_KILL_SWITCH_FILE = "kill_switch_file"
+REASON_EQUITY_UNAVAILABLE = "equity_unavailable"
+REASON_DAILY_LOSS_HALT = "daily_loss_halt"
+REASON_HOLD = "hold_requested"
+REASON_MAX_OPEN_POSITIONS = "max_open_positions_exceeded"
+REASON_MAX_POSITION_PCT = "max_position_pct_exceeded"
+REASON_POSITION_RESIZED = "position_resized_to_limit"
+REASON_NO_POSITION_TO_SELL = "no_existing_position_to_sell"
+REASON_SELL_CAPPED = "sell_capped_to_position"
+REASON_WITHIN_LIMITS = "within_limits"
+
 
 def _validate_proposed_trade(proposed_trade: dict) -> None:
     if "ticker" not in proposed_trade or not proposed_trade["ticker"]:
@@ -83,6 +101,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
             "approved": False,
             "adjusted_size": 0.0,
             "reasons": ["kill switch (KILL_SWITCH env var) is active — all trading halted"],
+            "reason_code": REASON_KILL_SWITCH_ENV,
         }
     if KILL_SWITCH_FILE.exists():
         return {
@@ -91,6 +110,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
             "reasons": [
                 f"kill switch file ({KILL_SWITCH_FILE.name}) is present — all trading halted"
             ],
+            "reason_code": REASON_KILL_SWITCH_FILE,
         }
 
     if equity <= 0:
@@ -98,6 +118,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
             "approved": False,
             "adjusted_size": 0.0,
             "reasons": ["account equity is zero or unknown — cannot size any trade safely"],
+            "reason_code": REASON_EQUITY_UNAVAILABLE,
         }
 
     daily_loss_pct = max(0.0, -daily_realized_pnl / equity)
@@ -109,6 +130,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 f"daily realized loss {daily_loss_pct:.2%} has reached/exceeded "
                 f"max_daily_loss_pct ({limits.max_daily_loss_pct:.2%}) — trading halted for the day"
             ],
+            "reason_code": REASON_DAILY_LOSS_HALT,
         }
 
     if action == "hold":
@@ -116,11 +138,13 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
             "approved": True,
             "adjusted_size": 0.0,
             "reasons": ["hold requested — no position change"],
+            "reason_code": REASON_HOLD,
         }
 
     existing_value = float(open_positions.get(ticker, 0.0))
     adjusted_size_pct = requested_size_pct
     reasons: list[str] = []
+    reason_code = REASON_WITHIN_LIMITS
 
     if action == "buy":
         is_new_position = existing_value <= 0
@@ -132,6 +156,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                     f"opening a new {ticker} position would exceed max_open_positions "
                     f"({limits.max_open_positions})"
                 ],
+                "reason_code": REASON_MAX_OPEN_POSITIONS,
             }
 
         max_position_dollars = limits.max_position_pct * equity
@@ -145,12 +170,14 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 f"past max_position_pct ({limits.max_position_pct:.2%}); resized to "
                 f"{adjusted_size_pct:.2%}"
             )
+            reason_code = REASON_POSITION_RESIZED
 
         if adjusted_size_pct <= 0:
             return {
                 "approved": False,
                 "adjusted_size": 0.0,
                 "reasons": reasons or [f"{ticker} is already at or above max_position_pct — no room to add"],
+                "reason_code": REASON_MAX_POSITION_PCT,
             }
 
     elif action == "sell":
@@ -160,6 +187,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 "approved": False,
                 "adjusted_size": 0.0,
                 "reasons": [f"no existing {ticker} position to sell"],
+                "reason_code": REASON_NO_POSITION_TO_SELL,
             }
         if requested_size_pct > existing_pct:
             adjusted_size_pct = existing_pct
@@ -167,6 +195,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 f"requested sell size {requested_size_pct:.2%} exceeds current {ticker} "
                 f"position ({existing_pct:.2%}); capped to full position size"
             )
+            reason_code = REASON_SELL_CAPPED
 
     if not reasons:
         reasons.append("trade within all risk limits")
@@ -175,4 +204,5 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
         "approved": True,
         "adjusted_size": round(adjusted_size_pct, 6),
         "reasons": reasons,
+        "reason_code": reason_code,
     }

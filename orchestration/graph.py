@@ -32,9 +32,10 @@ from typing import Optional, TypedDict
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
+from agents.human_override import request_override
 from agents.market_data_agent import get_price_data
 from agents.portfolio_manager import synthesize_decision
-from agents.risk_manager import check_trade
+from agents.risk_manager import REASON_MAX_POSITION_PCT, check_trade
 from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
@@ -59,6 +60,7 @@ class TradingState(TypedDict, total=False):
 
     human_approved: bool
     human_gate_note: str
+    human_override_result: Optional[dict]
     execution_result: Optional[dict]
 
 
@@ -126,12 +128,52 @@ def risk_final_check_node(state: TradingState) -> dict:
     updates: dict = {"risk_check_final": risk_check_final}
 
     if not risk_check_final["approved"]:
-        forced = dict(decision)
-        reasons = "; ".join(risk_check_final["reasons"])
-        forced["action"] = "hold"
-        forced["size_pct"] = 0.0
-        forced["reasoning"] += f" [OVERRIDDEN: final risk check rejected this trade — {reasons}]"
-        updates["portfolio_decision"] = forced
+        override_result = None
+        # Only a buy blocked purely on max_position_pct is override-eligible —
+        # kill switch, daily loss halt, and max_open_positions stay hard stops.
+        if (
+            risk_check_final.get("reason_code") == REASON_MAX_POSITION_PCT
+            and decision["action"] == "buy"
+        ):
+            portfolio_state = state["portfolio_state"]
+            equity = float(portfolio_state.get("equity", 0.0))
+            existing_value = float(
+                (portfolio_state.get("open_positions") or {}).get(decision["ticker"], 0.0)
+            )
+            override_result = request_override(
+                run_id=state["run_id"],
+                ticker=decision["ticker"],
+                requested_size_pct=decision["size_pct"],
+                existing_pct=(existing_value / equity) if equity else 0.0,
+                max_position_pct=limits.max_position_pct,
+                reasoning=decision["reasoning"],
+            )
+            updates["human_override_result"] = override_result
+
+        if override_result and override_result["approved"]:
+            approved = dict(decision)
+            approved["reasoning"] += (
+                f" [Human override approved by {override_result.get('responder') or 'unknown'}"
+                " — max_position_pct bypassed for this trade]"
+            )
+            updates["portfolio_decision"] = approved
+            updates["risk_check_final"] = {
+                **risk_check_final,
+                "approved": True,
+                "adjusted_size": decision["size_pct"],
+                "reasons": risk_check_final["reasons"]
+                + ["human override approved — max_position_pct bypassed for this trade"],
+            }
+        else:
+            forced = dict(decision)
+            reasons = "; ".join(risk_check_final["reasons"])
+            forced["action"] = "hold"
+            forced["size_pct"] = 0.0
+            note = f" [OVERRIDDEN: final risk check rejected this trade — {reasons}]"
+            if override_result is not None:
+                note += f" [human override declined/unavailable — {override_result['reason']}]"
+            forced["reasoning"] += note
+            updates["portfolio_decision"] = forced
     elif risk_check_final["adjusted_size"] < decision["size_pct"]:
         resized = dict(decision)
         reasons = "; ".join(risk_check_final["reasons"])
@@ -223,6 +265,7 @@ def log_and_end_node(state: TradingState) -> dict:
         "fundamentals_signal": state.get("fundamentals_signal"),
         "risk_check": state.get("risk_check"),
         "risk_check_final": state.get("risk_check_final"),
+        "human_override_result": state.get("human_override_result"),
         "human_gate_note": state.get("human_gate_note"),
     }
 

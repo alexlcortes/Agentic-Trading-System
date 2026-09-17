@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentictradingsystem.n8n</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/neuromancer/dev/agentic-trading-system &amp;&amp; ./scripts/start_n8n.sh</string>
+    </array>
+
+    <!--
+    Starts n8n ~5 min before the 16:30 daily trading run, so it's warm and
+    reachable if run_daily.py's human-override webhook needs it. Paired
+    with com.agentictradingsystem.n8n-stop, which stops it again later the
+    same day. Deliberately independent of com.agentictradingsystem.daily
+    (the main trading job) -- that job still calls run_daily.py directly,
+    not through scripts/run_daily_with_n8n.sh, until that switch is made
+    on purpose. See HUMAN_OVERRIDE_SETUP.md.
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>25</integer><key>Weekday</key><integer>1</integer></dict>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>25</integer><key>Weekday</key><integer>2</integer></dict>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>25</integer><key>Weekday</key><integer>3</integer></dict>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>25</integer><key>Weekday</key><integer>4</integer></dict>
+        <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>25</integer><key>Weekday</key><integer>5</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/n8n.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/n8n.log</string>
+</dict>
+</plist>

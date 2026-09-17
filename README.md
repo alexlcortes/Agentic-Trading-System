@@ -34,3 +34,19 @@ rm ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
 - `logs/run_daily.log` — structured application log
 - `logs/daily_summary.log` — one-line-per-ticker daily outcome summary
 - `logs/launchd.log` — launchd-level failures only (should normally stay empty)
+
+## Human override (risk cap bypass)
+
+A buy blocked solely by `max_position_pct` can optionally be escalated to a
+human for a timed approve/deny before it's forced to hold — see
+`HUMAN_OVERRIDE_SETUP.md`. Off by default (`ENABLE_HUMAN_OVERRIDE=false`);
+a missing/unconfigured n8n webhook always fails safe to "declined."
+
+Current channel: **ntfy** push notification with tap-to-approve action
+buttons (in progress). **Future upgrade:** Discord, since that's the
+channel actually used day to day — two designs (plain webhook links with
+Discord's link-preview crawler worked around, or native Interactions
+buttons with signature verification) are scoped in
+`HUMAN_OVERRIDE_SETUP.md` but not yet built. Slack was also scoped (n8n
+has the most native support for it) but parked since it's not checked
+regularly.

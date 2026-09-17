@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentictradingsystem.n8n-stop</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>launchctl kill SIGTERM gui/$(id -u)/com.agentictradingsystem.n8n</string>
+    </array>
+
+    <!--
+    Sends SIGTERM to the n8n job started by com.agentictradingsystem.n8n,
+    without unloading it -- it stays scheduled to fire again the next
+    matching weekday. 30 minutes after the 16:30 trading run start gives
+    room for a full watchlist pass plus one full OVERRIDE_TIMEOUT_SECONDS
+    (600s) wait if an override gets triggered near the end of the run.
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>1</integer></dict>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>2</integer></dict>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>3</integer></dict>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>4</integer></dict>
+        <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer><key>Weekday</key><integer>5</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/n8n.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/n8n.log</string>
+</dict>
+</plist>
