@@ -4,6 +4,7 @@ from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from agents.risk_manager import REASON_MAX_POSITION_PCT
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -54,15 +55,32 @@ def synthesize_decision(
     but that instruction is never trusted on its own — size_pct is always
     re-validated (clamped) in code afterward, regardless of what the model
     returned or claimed to have done.
+
+    One precheck rejection is deliberately NOT forced to hold here: a buy
+    blocked purely because the position is already at/over max_position_pct
+    (reason_code == REASON_MAX_POSITION_PCT, ceiling == 0). Every other
+    rejection reason is a hard stop and forces a hold immediately, with no
+    LLM call. But orchestration.graph.risk_final_check_node offers exactly
+    this one case to a human for override — and it only does that when the
+    *final* decision is still a "buy". If this function forced a hold here
+    too, that decision would already be "hold" by the time the graph reaches
+    the override check, and the override path would be permanently
+    unreachable for the one case it exists for. So instead the LLM still
+    runs, is told there's no automatic headroom, and is free to return a
+    real buy anyway — which then flows to risk_final_check_node for human
+    review instead of executing automatically.
     """
-    if not risk_check.get("approved", False):
+    approved = risk_check.get("approved", False)
+    override_eligible = not approved and risk_check.get("reason_code") == REASON_MAX_POSITION_PCT
+
+    if not approved and not override_eligible:
         reasons = "; ".join(risk_check.get("reasons", [])) or "not specified"
         return _forced_hold(
             ticker, f"Risk manager rejected this trade — forced to hold. Reasons: {reasons}"
         )
 
     ceiling = float(risk_check.get("adjusted_size", 0.0))
-    if ceiling <= 0:
+    if ceiling <= 0 and not override_eligible:
         return _forced_hold(
             ticker, "Risk manager allows zero size for this trade — forced to hold."
         )
@@ -90,28 +108,43 @@ def synthesize_decision(
             f"- reasoning: {fundamentals_signal.get('reasoning')}",
         ]
 
-    prompt_sections += [
-        "",
-        f"Risk manager constraint: the MAXIMUM size_pct you may return is {ceiling:.4f} "
-        f"({ceiling:.2%} of account equity). This is a hard ceiling, not a suggestion — "
-        "you must never return a size_pct above this value. If you believe a smaller size "
-        "is more appropriate given the signals above, return that smaller size instead.",
-    ]
+    if override_eligible:
+        reasons_text = "; ".join(risk_check.get("reasons", [])) or "not specified"
+        prompt_sections += [
+            "",
+            f"Risk manager note: {reasons_text} There is currently zero automatic headroom "
+            "to add to this position. If the signals above still justify a buy, return "
+            "action='buy' with the size_pct you'd genuinely recommend anyway — it will NOT "
+            "execute automatically; it will be routed to a human for manual override "
+            "approval before any order is placed. If the signals don't justify overriding "
+            "the limit, return action='hold' instead.",
+        ]
+    else:
+        prompt_sections += [
+            "",
+            f"Risk manager constraint: the MAXIMUM size_pct you may return is {ceiling:.4f} "
+            f"({ceiling:.2%} of account equity). This is a hard ceiling, not a suggestion — "
+            "you must never return a size_pct above this value. If you believe a smaller size "
+            "is more appropriate given the signals above, return that smaller size instead.",
+        ]
+
+    system_content = (
+        "You are a portfolio manager synthesizing multiple agent signals "
+        "into a single final trade decision. Weigh the technical signal as "
+        "the primary driver, sentiment as a secondary input, and fundamentals "
+        "(if given) as a minor, advisory input only. "
+    )
+    system_content += (
+        "Follow the risk manager note's instructions about the buy/hold choice."
+        if override_eligible
+        else "Your size_pct must never exceed the hard ceiling stated in the prompt."
+    )
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a portfolio manager synthesizing multiple agent signals "
-                    "into a single final trade decision. Weigh the technical signal as "
-                    "the primary driver, sentiment as a secondary input, and fundamentals "
-                    "(if given) as a minor, advisory input only. Your size_pct must never "
-                    "exceed the hard ceiling stated in the prompt."
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": "\n".join(prompt_sections)},
         ],
         response_format=PortfolioDecision,
@@ -128,6 +161,12 @@ def synthesize_decision(
 
     if result["action"] == "hold":
         result["size_pct"] = 0.0
+    elif override_eligible and result["action"] == "buy":
+        # No automatic ceiling applies here by design (ceiling == 0 just
+        # means "no automatic headroom", not "cap this at zero") — the real
+        # gates on this size_pct are risk_final_check_node's re-check and,
+        # if it's still rejected for the same reason, a human's approval.
+        pass
     elif result["size_pct"] > ceiling:
         logger.warning(
             "Portfolio manager LLM returned size_pct=%.4f exceeding ceiling=%.4f for %s "
