@@ -27,6 +27,13 @@ class RiskLimits:
     max_position_pct: float = 0.05
     max_daily_loss_pct: float = 0.02
     max_open_positions: int = 5
+    # Exit rules (agents/exit_rules.py). Placeholders, not tuned — validate
+    # with backtest/runner.py before trusting them. At max_position_pct=0.05,
+    # an 8% stop risks ~0.4% of equity per position.
+    stop_loss_pct: float = 0.08
+    trailing_stop_pct: float = 0.10
+    trailing_stop_activation_pct: float = 0.05  # trail only once up this much from entry
+    max_holding_days: int = 30
     watchlist: list[str] = field(
         default_factory=lambda: [
             "AAPL", "MSFT", "SPY", "GOOGL", "JPM", "JNJ", "XOM", "AMZN",

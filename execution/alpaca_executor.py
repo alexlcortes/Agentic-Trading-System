@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from datetime import date
 from pathlib import Path
 
 from alpaca.trading.client import TradingClient
@@ -8,6 +9,7 @@ from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
 
 from config import settings
+from execution.position_meta import load_meta, record_entry, save_meta, sync_meta
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,7 @@ def get_portfolio_state() -> dict:
     last_equity = float(account.last_equity)
 
     open_positions: dict[str, float] = {p.symbol: float(p.market_value) for p in positions}
+    position_details = _position_details(positions)
 
     # A pending buy (queued_for_next_session, not yet filled) isn't in
     # Alpaca's positions yet, but it IS committed future exposure — without
@@ -90,6 +93,29 @@ def get_portfolio_state() -> dict:
         "equity": equity,
         "open_positions": open_positions,
         "daily_realized_pnl": equity - last_equity,
+        "position_details": position_details,
+    }
+
+
+def _position_details(positions) -> dict[str, dict]:
+    """Per-position detail for exit rules (agents/exit_rules.py), built
+    from filled positions only — a pending buy has no entry price yet, so
+    it deliberately gets no entry here even though open_positions counts it
+    as exposure. check_trade never reads this key; open_positions stays its
+    only input."""
+    current_prices = {p.symbol: float(p.current_price) for p in positions}
+    meta = sync_meta(load_meta(), current_prices, date.today().isoformat())
+    save_meta(meta)
+
+    return {
+        p.symbol: {
+            "qty": float(p.qty),
+            "avg_entry_price": float(p.avg_entry_price),
+            "current_price": float(p.current_price),
+            "unrealized_plpc": float(p.unrealized_plpc),
+            **meta[p.symbol],
+        }
+        for p in positions
     }
 
 
@@ -151,6 +177,9 @@ def reconcile_pending_orders() -> list[dict]:
             "ticker": info["ticker"],
             "error": "order rejected by broker" if order.status == OrderStatus.REJECTED else None,
         }
+        if info["side"] == "buy" and filled_qty > 0:
+            record_entry(info["ticker"], info["run_id"], date.today().isoformat())
+
         resolved.append(
             {"order_id": order_id, "ticker": info["ticker"], "run_id": info["run_id"], "result": result}
         )
@@ -257,6 +286,9 @@ def submit_order(
 
     if order.status == OrderStatus.PARTIALLY_FILLED or status == "partially_filled_timeout":
         logger.info("Order %s partially filled: %s/%s", order_id, filled_qty, qty)
+
+    if side == "buy" and filled_qty > 0 and run_id is not None:
+        record_entry(ticker, run_id, date.today().isoformat())
 
     if status == "queued_for_next_session" and run_id is not None:
         pending = _load_pending()
