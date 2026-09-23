@@ -74,6 +74,11 @@ REASON_NO_POSITION_TO_SELL = "no_existing_position_to_sell"
 REASON_SELL_CAPPED = "sell_capped_to_position"
 REASON_WITHIN_LIMITS = "within_limits"
 
+# Tolerance for threshold comparisons, so "exactly at the limit" counts as
+# at the limit: in floats, a loss of $2604.24 on $130,212 equity (exactly
+# 2%) computes as 0.019999999999999997 and would miss a 2% halt.
+EPSILON = 1e-9
+
 
 def _validate_proposed_trade(proposed_trade: dict) -> None:
     if "ticker" not in proposed_trade or not proposed_trade["ticker"]:
@@ -122,7 +127,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
         }
 
     daily_loss_pct = max(0.0, -daily_realized_pnl / equity)
-    if daily_loss_pct >= limits.max_daily_loss_pct:
+    if daily_loss_pct >= limits.max_daily_loss_pct - EPSILON:
         return {
             "approved": False,
             "adjusted_size": 0.0,
@@ -164,7 +169,11 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
         requested_dollars = requested_size_pct * equity
 
         if requested_dollars > room_dollars:
-            adjusted_size_pct = room_dollars / equity
+            # Rounded here, not just at return: otherwise a position a cent
+            # under the cap leaves ~1e-9 of room, passes the <= 0 check below,
+            # and comes back approved with adjusted_size 0.0 — which skips the
+            # REASON_MAX_POSITION_PCT human-override path it should get.
+            adjusted_size_pct = round(room_dollars / equity, 6)
             reasons.append(
                 f"requested size {requested_size_pct:.2%} of equity would push {ticker} "
                 f"past max_position_pct ({limits.max_position_pct:.2%}); resized to "
