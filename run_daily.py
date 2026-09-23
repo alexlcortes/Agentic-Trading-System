@@ -16,6 +16,15 @@ should make that combination impossible by construction, but the whole
 point of this checkpoint is to verify that in practice, not just assume
 the code does what it's supposed to.
 
+Exit rules (agents/exit_rules.py) run in shadow mode during this window:
+every held position is evaluated each run and logged as type "exit_check",
+but no order is ever placed from them. They're a separate question from the
+checkpoint above — "would these rules have helped?" — answered by following
+each ticker's later exit_check entries after a would_exit:
+    grep '"would_exit": true' logs/trades.jsonl
+Any such line followed by a real sell execution_result for the same ticker
+means a shadow exit leaked into trading, which should be impossible.
+
 LIVE MODE: this script never forces auto_execute=True except in paper
 mode. If ALPACA_BASE_URL points at live and auto_execute=True (e.g. left
 over from paper testing), it refuses to run at all — live trading always
@@ -39,7 +48,8 @@ from pathlib import Path
 from config import settings
 from config.settings import RiskLimits
 from execution.alpaca_executor import _get_client, get_portfolio_state, reconcile_pending_orders
-from logs.audit_logger import log_reconciliation
+from agents.exit_rules import check_exit
+from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.graph import run_trading_cycle
 
 logging.basicConfig(
@@ -92,7 +102,51 @@ def _startup_safety_check() -> bool:
     return is_paper
 
 
-def _write_summary(entries: list[dict], skip_reason: str | None = None) -> None:
+def _shadow_exit_checks(limits: RiskLimits) -> list[dict]:
+    """Evaluate the exit rules against every held position and log the
+    result, without trading on it (EXIT_REVIEW_MODE=shadow). Runs before
+    the watchlist loop so it sees positions as of the start of this run.
+    Never raises: a bug here must not cost a day of real trading decisions."""
+    if settings.EXIT_REVIEW_MODE != "shadow":
+        return []
+    try:
+        details = get_portfolio_state().get("position_details", {})
+        checks = []
+        for ticker, position in details.items():
+            result = check_exit(position, limits)
+            log_exit_check(ticker, "shadow", position, result, datetime.now(timezone.utc))
+            checks.append({"ticker": ticker, "position": position, "result": result})
+        return checks
+    except Exception:
+        logger.exception("Shadow exit checks failed — continuing with the normal run")
+        return [{"ticker": None, "error": True}]
+
+
+def _exit_summary_lines(exit_checks: list[dict]) -> list[str]:
+    if not exit_checks:
+        return []
+    if any(c.get("error") for c in exit_checks):
+        return ["EXIT RULES (shadow): ERROR — see run_daily.log"]
+    lines = []
+    for c in exit_checks:
+        result = c["result"]
+        if result["exit"] or result["review"]:
+            label = "WOULD EXIT" if result["exit"] else "REVIEW"
+            lines.append(
+                f"EXIT RULES (shadow): {c['ticker']} {label} [{result['reason_code']}] "
+                f"{'; '.join(result['reasons'])} — no order placed"
+            )
+    if not lines:
+        plpcs = ", ".join(
+            f"{c['ticker']} {c['position']['unrealized_plpc']:+.2%}" for c in exit_checks
+        )
+        lines.append(f"EXIT RULES (shadow): {len(exit_checks)} positions checked, none triggered ({plpcs})")
+    return lines
+
+
+def _write_summary(
+    entries: list[dict], skip_reason: str | None = None, exit_checks: list[dict] | None = None
+) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     lines = [f"\n=== {timestamp} ==="]
 
@@ -113,6 +167,8 @@ def _write_summary(entries: list[dict], skip_reason: str | None = None) -> None:
                 f"confidence={decision.get('confidence')} "
                 f"execution={execution}"
             )
+
+    lines += _exit_summary_lines(exit_checks or [])
 
     with open(SUMMARY_LOG_PATH, "a") as f:
         f.write("\n".join(lines) + "\n")
@@ -172,6 +228,8 @@ def run_once() -> list[dict]:
         limits = replace(limits, max_position_pct=settings.LIVE_MAX_POSITION_PCT)
         logger.warning("Live max_position_pct overridden to %.4f", limits.max_position_pct)
 
+    exit_checks = _shadow_exit_checks(limits)
+
     results: list[dict] = []
 
     for ticker in limits.watchlist:
@@ -186,7 +244,7 @@ def run_once() -> list[dict]:
             logger.exception("run_daily: %s failed", ticker)
             results.append({"ticker": ticker, "final_state": None, "error": str(exc)})
 
-    _write_summary(results)
+    _write_summary(results, exit_checks=exit_checks)
     return results
 
 

@@ -101,3 +101,37 @@ def log_human_override(
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+def log_exit_check(
+    ticker: str,
+    mode: str,
+    position: dict,
+    result: dict,
+    timestamp,
+) -> None:
+    """Append an entry recording one exit-rule evaluation of a held
+    position (see agents.exit_rules and run_daily.py). Logged for EVERY
+    held position on every run, not just the ones that trigger — judging
+    whether the rules help needs the price path of positions they left
+    alone too, and a later entry for the same ticker shows what happened
+    after a would_exit.
+
+    `mode` is "shadow" while these are log-only: would_exit=True means no
+    order was placed.
+    """
+    entry = {
+        "type": "exit_check",
+        "mode": mode,
+        "ticker": ticker,
+        "timestamp": _serialize_timestamp(timestamp),
+        "would_exit": result["exit"],
+        "review": result["review"],
+        "reason_code": result["reason_code"],
+        "reasons": result["reasons"],
+        "position": position,
+    }
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_PATH, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")

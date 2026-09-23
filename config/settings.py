@@ -52,6 +52,14 @@ def _bool_env(name: str, default: bool) -> bool:
 auto_execute: bool = _bool_env("AUTO_EXECUTE", False)
 kill_switch: bool = _bool_env("KILL_SWITCH", False)
 
+# How run_daily.py uses agents/exit_rules.py. "shadow" evaluates every held
+# position each run and logs what WOULD have exited (type "exit_check" in
+# trades.jsonl) without trading, so the rules can be judged on real data
+# before they're trusted with orders. "off" skips them entirely. There is
+# deliberately no "live" value yet — acting on exits needs graph routing
+# that doesn't exist.
+EXIT_REVIEW_MODE = os.getenv("EXIT_REVIEW_MODE", "shadow").strip().lower()
+
 # Human-in-the-loop override for trades the risk manager blocks solely for
 # hitting max_position_pct (see agents.human_override). Off by default so a
 # missing/unconfigured webhook never changes existing hold-on-reject
