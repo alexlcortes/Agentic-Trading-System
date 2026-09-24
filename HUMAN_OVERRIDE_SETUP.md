@@ -117,7 +117,7 @@ script below — building the workflow requires the browser UI):
 ```
 n8n start
 ```
-Open `http://localhost:5678`, create your owner account (email/password —
+Open `http://localhost:5690`, create your owner account (email/password —
 this is local-only, nothing is sent anywhere), then work through the
 "Step-by-step: ntfy setup" and "Step-by-step: n8n workflow" sections below
 in that browser tab. When you're done and the workflow is toggled **Active**,
@@ -131,7 +131,7 @@ detects the Mac's current LAN IP and exports `N8N_WEBHOOK_URL`/
 interactive build below — the script does this automatically so the
 resume URLs your phone taps always resolve to a reachable address, even if
 DHCP hands out a new IP on a different day), starts `n8n start` in the
-background, polls `http://localhost:5678/healthz` until it's up (or gives
+background, polls `http://localhost:5690/healthz` until it's up (or gives
 up after 60s and proceeds anyway — a missing n8n fails safe to "declined,"
 it never blocks the trading run), runs `run_daily.py`, then kills the n8n
 process on exit. The launchd plist
@@ -145,12 +145,12 @@ exited).
 yourself before running `n8n start`, or you'll hit a cookie error (see
 Troubleshooting) and phone-unreachable resume URLs:
 ```
-export N8N_WEBHOOK_URL="http://<your-lan-ip>:5678/"
+export N8N_WEBHOOK_URL="http://<your-lan-ip>:5690/"
 export N8N_SECURE_COOKIE=false
 n8n start
 ```
 Get your LAN IP with `ipconfig getifaddr en0` (or `en1`). Access the
-**editor** at `http://localhost:5678` in Chrome either way — the env vars
+**editor** at `http://localhost:5690` in Chrome either way — the env vars
 only affect what URLs n8n *generates*, not what address you browse to.
 
 **Don't reload the launchd job until n8n is actually installed and the
@@ -264,7 +264,7 @@ steps 2–3 above), add these to `.env`:
 
 ```
 ENABLE_HUMAN_OVERRIDE=true
-N8N_OVERRIDE_WEBHOOK_URL=http://<your-lan-ip>:5678/webhook/override-a1e9f2
+N8N_OVERRIDE_WEBHOOK_URL=http://<your-lan-ip>:5690/webhook/override-a1e9f2
 N8N_OVERRIDE_SECRET=<the secret from step 3>
 OVERRIDE_TIMEOUT_SECONDS=600
 ```
@@ -278,7 +278,7 @@ daily run:
 
 1. **Isolate the n8n side with curl first** (skip Python entirely):
    ```
-   curl -X POST http://<your-lan-ip>:5678/webhook/<your-path> -H "Content-Type: application/json" -H "X-Override-Secret: <your-secret>" -d '{"run_id":"test1","ticker":"AAPL","action":"buy","requested_size_pct":0.02,"existing_pct":0.05,"max_position_pct":0.05,"reasoning":"manual test","timeout_seconds":600}'
+   curl -X POST http://<your-lan-ip>:5690/webhook/<your-path> -H "Content-Type: application/json" -H "X-Override-Secret: <your-secret>" -d '{"run_id":"test1","ticker":"AAPL","action":"buy","requested_size_pct":0.02,"existing_pct":0.05,"max_position_pct":0.05,"reasoning":"manual test","timeout_seconds":600}'
    ```
    Keep the `-d` JSON on **one line** — pasting a multi-line quoted string
    into an interactive terminal can get corrupted by the shell (extra
@@ -293,7 +293,7 @@ daily run:
    couple seconds, and (c) letting it sit past the timeout returns
    `{'approved': False, ...}` on its own without touching your phone.
 3. **Through the actual wrapper**: stop any manually-running n8n first
-   (`lsof -i :5678` to find it, or Ctrl+C in its terminal — the wrapper
+   (`lsof -i :5690` to find it, or Ctrl+C in its terminal — the wrapper
    starts its own instance and needs the port free), then run
    `./scripts/run_daily_with_n8n.sh` by hand once (not via launchd) and
    watch `logs/n8n.log` to confirm n8n started, activated the workflow,
@@ -308,7 +308,7 @@ daily run:
   happens when you access n8n via a non-`localhost` address (the LAN IP)
   or via Safari. Fix: `export N8N_SECURE_COOKIE=false` before `n8n start`
   (already done automatically by the wrapper script). Browse the editor at
-  `http://localhost:5678` in Chrome regardless.
+  `http://localhost:5690` in Chrome regardless.
 - **Forgot the owner password** — `n8n start` must be stopped first, then
   `n8n user-management:reset` clears just the login (not your workflows),
   and the next `n8n start` shows the setup screen again to create a new
@@ -331,9 +331,9 @@ daily run:
   shell/paste artifact from a multi-line `-d '{...}'` JSON body getting
   corrupted on paste, not a real JSON or workflow problem. Put the JSON
   payload on a single line.
-- **Port 5678 already in use** when starting the wrapper script — you
+- **Port 5690 already in use** when starting the wrapper script — you
   likely still have a manually-started `n8n start` running from testing.
-  `lsof -i :5678` to find the PID, stop it (Ctrl+C in its terminal, or
+  `lsof -i :5690` to find the PID, stop it (Ctrl+C in its terminal, or
   `kill <pid>`) before running the wrapper.
 
 ## What to double check before relying on this
@@ -359,7 +359,7 @@ daily run:
 
 ## Known limitation: phone must be on the same LAN as the Mac
 
-The ntfy action buttons hit the Mac's LAN IP (e.g. `192.168.1.168:5678`)
+The ntfy action buttons hit the Mac's LAN IP (e.g. `192.168.1.168:5690`)
 directly, so approving a trade only works while your phone is on the same
 Wi-Fi network as this Mac. Off-network (cellular, another Wi-Fi), the
 buttons can't reach n8n and any blocked trade just times out to "declined"
