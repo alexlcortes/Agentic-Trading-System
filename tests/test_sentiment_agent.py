@@ -1,6 +1,18 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
-from agents.sentiment_agent import MAX_HEADLINES, _build_user_message, _filter_results
+import pytest
+
+from agents import sentiment_agent
+from agents.sentiment_agent import (
+    MAX_HEADLINES,
+    SentimentResult,
+    _build_user_message,
+    _confidence_cap,
+    _evidence_score,
+    _filter_results,
+    get_news_sentiment,
+)
 
 NOW = datetime(2026, 9, 24, 20, 30, tzinfo=timezone.utc)
 
@@ -98,3 +110,57 @@ def test_user_message_carries_as_of_date_and_per_headline_dates():
     assert "As of: 2026-09-24" in message
     assert "- [2026-09-19, 5d ago, marketwatch.com] Nintendo ADR falls Friday" in message
     assert "Recent headlines" not in message
+
+
+def _headline(age_days):
+    return {"title": f"story {age_days}", "source": "x.com", "published": "2026-09-24", "age_days": age_days}
+
+
+def test_older_headlines_count_as_half_evidence():
+    assert _evidence_score([_headline(0), _headline(3), _headline(4), _headline(6)]) == 3.0
+
+
+@pytest.mark.parametrize(
+    "score, cap",
+    [(0.0, 0.0), (0.5, 0.15), (1.0, 0.3), (1.5, 0.3), (2.0, 0.45), (3.0, 0.6), (4.5, 0.6), (5.0, 1.0)],
+)
+def test_confidence_cap_table(score, cap):
+    assert _confidence_cap(score) == cap
+
+
+def _fake_llm(monkeypatch, confidence):
+    parsed = SentimentResult(
+        sentiment="bearish", confidence=confidence, key_headlines=[], reasoning="r"
+    )
+    completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(parse=lambda **kwargs: completion))
+    )
+    monkeypatch.setattr(sentiment_agent, "OpenAI", lambda **kwargs: client)
+
+
+def test_model_confidence_is_capped_by_evidence_and_raw_is_logged(monkeypatch):
+    monkeypatch.setattr(sentiment_agent, "_fetch_headlines", lambda t, now: ([_headline(1)], {}))
+    _fake_llm(monkeypatch, 0.56)
+    result = get_news_sentiment("SPY")
+    assert result["confidence"] == 0.3
+    assert result["confidence_raw"] == 0.56
+    assert result["evidence_score"] == 1.0
+    assert result["confidence_cap"] == 0.3
+
+
+def test_confidence_under_the_cap_is_untouched(monkeypatch):
+    headlines = [_headline(0) for _ in range(5)]
+    monkeypatch.setattr(sentiment_agent, "_fetch_headlines", lambda t, now: (headlines, {}))
+    _fake_llm(monkeypatch, 0.8)
+    result = get_news_sentiment("AAPL")
+    assert result["confidence"] == 0.8
+    assert result["confidence_raw"] == 0.8
+
+
+def test_no_headlines_skips_the_llm(monkeypatch):
+    monkeypatch.setattr(sentiment_agent, "_fetch_headlines", lambda t, now: ([], {"listing_page": 8}))
+    monkeypatch.setattr(sentiment_agent, "OpenAI", lambda **kwargs: pytest.fail("LLM called"))
+    result = get_news_sentiment("V")
+    assert result["confidence"] == 0.0
+    assert result["confidence_cap"] == 0.0

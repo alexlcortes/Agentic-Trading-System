@@ -93,9 +93,11 @@ def synthesize_decision(
         f"- confidence: {technical_signal.get('confidence')}",
         f"- reasoning: {technical_signal.get('reasoning')}",
         "",
-        "Sentiment signal:",
+        "Sentiment signal (confidence = strength of news evidence, capped by how many "
+        "recent headlines support it; low confidence means little news, not a contrary view):",
         f"- sentiment: {sentiment_signal.get('sentiment')}",
         f"- confidence: {sentiment_signal.get('confidence')}",
+        f"- headlines behind it: {len(sentiment_signal.get('headlines') or [])}",
         f"- reasoning: {sentiment_signal.get('reasoning')}",
     ]
 

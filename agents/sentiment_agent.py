@@ -29,6 +29,17 @@ _LISTING_TITLE = re.compile(
 )
 _LISTING_URL = re.compile(r"/quote/|/stock/[A-Z0-9.\-]+-US\b", re.IGNORECASE)
 
+# Confidence here means strength of evidence, not probability of a price
+# move, and the model's own number is capped by how much evidence it had.
+# PLACEHOLDER VALUES: chosen by hand as a starting point, not measured.
+# Replace them once enough live logs exist to check calibration against
+# forward returns (confidence_raw, evidence_score and headlines are all
+# logged for exactly that). Each entry is (minimum evidence_score, cap);
+# the highest threshold met applies.
+CONFIDENCE_CAPS = ((0.0, 0.0), (0.5, 0.15), (1.0, 0.3), (2.0, 0.45), (3.0, 0.6), (5.0, 1.0))
+# Headlines older than this count as half a headline of evidence.
+FULL_WEIGHT_MAX_AGE_DAYS = 3
+
 
 class SentimentResult(BaseModel):
     sentiment: Literal["bullish", "bearish", "neutral"]
@@ -47,7 +58,11 @@ SYSTEM_PROMPT = (
     "refer to its publish date, not to the as-of date. Give more weight to "
     "newer headlines; an event from several days ago may already be priced "
     "in. If only a few headlines carry real news about this company, lower "
-    "your confidence accordingly rather than reading a trend into them."
+    "your confidence accordingly rather than reading a trend into them.\n\n"
+    "confidence means strength of evidence: how much recent, substantive news "
+    "supports your classification. It is not the probability that the price "
+    "moves. A couple of thin or old headlines is weak evidence even if they "
+    "all point the same way."
 )
 
 
@@ -118,6 +133,20 @@ def _filter_results(results: list[dict], now: datetime) -> tuple[list[dict], dic
     return [headline for _, headline in kept[:MAX_HEADLINES]], dropped
 
 
+def _evidence_score(headlines: list[dict]) -> float:
+    return sum(
+        1.0 if h["age_days"] <= FULL_WEIGHT_MAX_AGE_DAYS else 0.5 for h in headlines
+    )
+
+
+def _confidence_cap(evidence_score: float) -> float:
+    cap = 0.0
+    for min_score, threshold_cap in CONFIDENCE_CAPS:
+        if evidence_score >= min_score:
+            cap = threshold_cap
+    return cap
+
+
 def _build_user_message(ticker: str, headlines: list[dict], now: datetime) -> str:
     lines = [
         f"- [{h['published']}, {h['age_days']}d ago, {h['source'] or 'unknown source'}] {h['title']}"
@@ -143,15 +172,24 @@ def _fetch_headlines(ticker: str, now: datetime) -> tuple[list[dict], dict]:
 def get_news_sentiment(ticker: str) -> dict:
     """Fetch recent headlines for `ticker` and have the LLM classify sentiment.
 
-    Returns a dict matching SentimentResult's schema, plus "headlines" (what
-    the model was shown, with dates) and "headlines_dropped" (what the filter
-    removed) for the audit log. If no headlines survive filtering, returns a
-    neutral, zero-confidence result rather than guessing.
+    Returns a dict matching SentimentResult's schema, plus audit fields:
+    "headlines" (what the model was shown, with dates), "headlines_dropped"
+    (what the filter removed), "evidence_score", "confidence_cap", and
+    "confidence_raw" (the model's number before the cap). "confidence" is
+    the capped value. If no headlines survive filtering, returns a neutral,
+    zero-confidence result rather than guessing.
     """
     ticker = ticker.strip().upper()
     now = datetime.now(timezone.utc)
     headlines, dropped = _fetch_headlines(ticker, now)
-    audit = {"headlines": headlines, "headlines_dropped": dropped}
+    evidence_score = _evidence_score(headlines)
+    confidence_cap = _confidence_cap(evidence_score)
+    audit = {
+        "headlines": headlines,
+        "headlines_dropped": dropped,
+        "evidence_score": evidence_score,
+        "confidence_cap": confidence_cap,
+    }
 
     if not headlines:
         return {
@@ -165,6 +203,7 @@ def get_news_sentiment(ticker: str) -> dict:
                 ),
             ).model_dump(),
             **audit,
+            "confidence_raw": 0.0,
         }
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -177,5 +216,9 @@ def get_news_sentiment(ticker: str) -> dict:
         response_format=SentimentResult,
     )
 
-    result = completion.choices[0].message.parsed
-    return {**result.model_dump(), **audit}
+    result = completion.choices[0].message.parsed.model_dump()
+    # The prompt asks for evidence-scaled confidence, but that instruction is
+    # never trusted on its own: the cap is enforced here in code.
+    result["confidence_raw"] = result["confidence"]
+    result["confidence"] = min(result["confidence"], confidence_cap)
+    return {**result, **audit}
