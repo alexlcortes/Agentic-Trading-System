@@ -35,7 +35,7 @@ from langgraph.graph import END, START, StateGraph
 from agents.human_override import request_override
 from agents.market_data_agent import get_price_data
 from agents.portfolio_manager import synthesize_decision
-from agents.risk_manager import REASON_MAX_POSITION_PCT, check_trade
+from agents.risk_manager import REASON_MAX_POSITION_PCT, check_trade, shares_for
 from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
@@ -68,6 +68,12 @@ def _limits(state: TradingState) -> RiskLimits:
     return state.get("risk_limits") or RiskLimits()
 
 
+def _latest_price(state: TradingState) -> float:
+    # Latest close as a sizing approximation (the market order itself fills
+    # at the actual current price). Risk checks and execution share it.
+    return float(state["price_data"]["Close"].iloc[-1])
+
+
 def market_data_node(state: TradingState) -> dict:
     price_data = get_price_data(state["ticker"])
     return {"price_data": price_data}
@@ -96,6 +102,7 @@ def risk_precheck_node(state: TradingState) -> dict:
             "ticker": state["ticker"],
             "action": action,
             "size_pct": limits.max_position_pct,
+            "price": _latest_price(state),
         }
 
     risk_check = check_trade(proposed_trade, state["portfolio_state"], limits)
@@ -123,6 +130,7 @@ def risk_final_check_node(state: TradingState) -> dict:
         "ticker": decision["ticker"],
         "action": decision["action"],
         "size_pct": decision["size_pct"],
+        "price": _latest_price(state),
     }
     risk_check_final = check_trade(proposed_trade, state["portfolio_state"], limits)
     updates: dict = {"risk_check_final": risk_check_final}
@@ -232,12 +240,11 @@ def execution_node(state: TradingState) -> dict:
             }
         }
 
-    # size_pct -> shares, using the latest close as a sizing approximation
-    # (the market order itself will fill at the actual current price).
-    latest_price = float(state["price_data"]["Close"].iloc[-1])
+    latest_price = _latest_price(state)
     equity = float(state["portfolio_state"]["equity"])
-    qty = int((decision["size_pct"] * equity) // latest_price)
+    qty = shares_for(decision["size_pct"], equity, latest_price)
 
+    # Backstop only: risk_final_check already rejects anything under one share.
     if qty <= 0:
         print(
             f"[execution] computed qty=0 for {decision['ticker']} "

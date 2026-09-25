@@ -9,6 +9,10 @@ Contract:
         "ticker": str,
         "action": "buy" | "sell" | "hold",
         "size_pct": float,   # requested size as a fraction of equity, e.g. 0.05 = 5%
+        "price": float,      # optional: latest price per share. When given, a
+                             # buy/sell that sizes to under one whole share is
+                             # rejected here instead of being approved and then
+                             # silently skipped at execution as zero shares
     }
     portfolio_state = {
         "equity": float,                        # total account equity, in dollars
@@ -42,6 +46,14 @@ Design notes (read before changing this file):
       A sell can never be blocked for "too many positions," and is instead
       capped at the size of the position actually held (can't sell more
       than you own).
+    - The one-whole-share check uses shares_for(), the same function
+      execution uses to turn size_pct into a share count, so "approved"
+      here always means at least one share gets ordered. When a buy is
+      under one share only because the max_position_pct cap shrank it, it
+      is reported as REASON_MAX_POSITION_PCT (the cap is what's blocking
+      it, so the human-override path still applies). When the requested
+      size was under one share to begin with, it's REASON_BELOW_ONE_SHARE,
+      a hard stop.
 """
 
 from pathlib import Path
@@ -72,12 +84,19 @@ REASON_MAX_POSITION_PCT = "max_position_pct_exceeded"
 REASON_POSITION_RESIZED = "position_resized_to_limit"
 REASON_NO_POSITION_TO_SELL = "no_existing_position_to_sell"
 REASON_SELL_CAPPED = "sell_capped_to_position"
+REASON_BELOW_ONE_SHARE = "below_one_share"
 REASON_WITHIN_LIMITS = "within_limits"
 
 # Tolerance for threshold comparisons, so "exactly at the limit" counts as
 # at the limit: in floats, a loss of $2604.24 on $130,212 equity (exactly
 # 2%) computes as 0.019999999999999997 and would miss a 2% halt.
 EPSILON = 1e-9
+
+
+def shares_for(size_pct: float, equity: float, price: float) -> int:
+    """Whole shares that size_pct of equity buys at price. Execution sizes
+    orders with this too, so the risk check and the order can't disagree."""
+    return int((size_pct * equity) // price)
 
 
 def _validate_proposed_trade(proposed_trade: dict) -> None:
@@ -87,6 +106,21 @@ def _validate_proposed_trade(proposed_trade: dict) -> None:
         raise ValueError(f"proposed_trade['action'] must be one of {VALID_ACTIONS}")
     if float(proposed_trade.get("size_pct", 0.0)) < 0:
         raise ValueError("proposed_trade['size_pct'] must not be negative")
+    price = proposed_trade.get("price")
+    if price is not None and float(price) <= 0:
+        raise ValueError("proposed_trade['price'] must be positive when given")
+
+
+def _below_one_share(ticker: str, size_pct: float, equity: float, price: float) -> dict:
+    return {
+        "approved": False,
+        "adjusted_size": 0.0,
+        "reasons": [
+            f"{size_pct:.2%} of equity (${size_pct * equity:,.2f}) is less than one "
+            f"{ticker} share at ${price:,.2f}"
+        ],
+        "reason_code": REASON_BELOW_ONE_SHARE,
+    }
 
 
 def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits) -> dict:
@@ -95,6 +129,7 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
     ticker = proposed_trade["ticker"]
     action = proposed_trade["action"]
     requested_size_pct = float(proposed_trade.get("size_pct", 0.0))
+    price = proposed_trade.get("price")
 
     equity = float(portfolio_state.get("equity", 0.0))
     open_positions: dict[str, float] = portfolio_state.get("open_positions", {}) or {}
@@ -189,6 +224,20 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 "reason_code": REASON_MAX_POSITION_PCT,
             }
 
+        if price is not None and shares_for(round(adjusted_size_pct, 6), equity, price) < 1:
+            if reason_code == REASON_POSITION_RESIZED:
+                return {
+                    "approved": False,
+                    "adjusted_size": 0.0,
+                    "reasons": [
+                        f"room left under max_position_pct for {ticker} "
+                        f"({adjusted_size_pct:.2%} of equity, ${adjusted_size_pct * equity:,.2f}) "
+                        f"is less than one share at ${price:,.2f} — no room to add"
+                    ],
+                    "reason_code": REASON_MAX_POSITION_PCT,
+                }
+            return _below_one_share(ticker, adjusted_size_pct, equity, price)
+
     elif action == "sell":
         existing_pct = existing_value / equity
         if existing_value <= 0:
@@ -205,6 +254,9 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                 f"position ({existing_pct:.2%}); capped to full position size"
             )
             reason_code = REASON_SELL_CAPPED
+
+        if price is not None and shares_for(round(adjusted_size_pct, 6), equity, price) < 1:
+            return _below_one_share(ticker, adjusted_size_pct, equity, price)
 
     if not reasons:
         reasons.append("trade within all risk limits")
