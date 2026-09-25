@@ -25,10 +25,27 @@ from config import settings
 from logs.audit_logger import log_human_override
 
 
+def format_override_message(
+    ticker: str,
+    qty: int,
+    notional: float,
+    size_pct: float,
+    existing_pct: float,
+    max_position_pct: float,
+) -> str:
+    return (
+        f"{ticker}: buy {qty} sh (~${notional:,.0f}, {size_pct:.2%} of equity)\n"
+        f"current position: {existing_pct:.2%}, cap: {max_position_pct:.2%}"
+    )
+
+
 def request_override(
     run_id: str,
     ticker: str,
     requested_size_pct: float,
+    requested_qty: int,
+    requested_notional: float,
+    equity: float,
     existing_pct: float,
     max_position_pct: float,
     reasoning: str,
@@ -56,7 +73,17 @@ def request_override(
         "run_id": run_id,
         "ticker": ticker,
         "action": "buy",
+        # Pre-rendered so the notification shows the real consequence
+        # (shares and dollars) instead of a raw fraction a human has to
+        # interpret — a bare "5.0" reads as 5% but means 500%.
+        "message": format_override_message(
+            ticker, requested_qty, requested_notional, requested_size_pct,
+            existing_pct, max_position_pct,
+        ),
         "requested_size_pct": requested_size_pct,
+        "requested_qty": requested_qty,
+        "requested_notional": round(requested_notional, 2),
+        "equity": round(equity, 2),
         "existing_pct": existing_pct,
         "max_position_pct": max_position_pct,
         "reasoning": reasoning,
@@ -103,6 +130,8 @@ def request_override(
         run_id=run_id,
         ticker=ticker,
         requested_size_pct=requested_size_pct,
+        requested_qty=requested_qty,
+        requested_notional=requested_notional,
         timestamp=datetime.now(timezone.utc),
         result=result,
     )

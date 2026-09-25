@@ -77,7 +77,11 @@ Headers: X-Override-Secret: <N8N_OVERRIDE_SECRET>
   "run_id": "b07d6636f43d4254822ccb2adeff4b0c",
   "ticker": "AAPL",
   "action": "buy",
-  "requested_size_pct": 0.02,
+  "message": "AAPL: buy 5 sh (~$1,704, 1.70% of equity)\ncurrent position: 5.00%, cap: 5.00%",
+  "requested_size_pct": 0.017,
+  "requested_qty": 5,
+  "requested_notional": 1704.4,
+  "equity": 100000.0,
   "existing_pct": 0.05,
   "max_position_pct": 0.05,
   "reasoning": "<the portfolio manager's reasoning text>",
@@ -203,8 +207,7 @@ to confirm what's currently loaded first).
    - URL: `https://ntfy.sh/<your-topic>`
    - Body (raw text) — the message:
      ```
-     {{$json.body.ticker}}: buy {{$json.body.requested_size_pct}} of equity
-     (current position: {{$json.body.existing_pct}}, cap: {{$json.body.max_position_pct}})
+     {{$json.body.message}}
      {{$json.body.reasoning}}
      ```
    - Headers (add each as a Name/Value row, both in **Expression** mode
@@ -239,8 +242,10 @@ to confirm what's currently loaded first).
    **exists** (use the String-type "exists" operator, since a URL query
    param always arrives as a string):
    - True branch → a **Set** ("Edit Fields") node building
-     `{"approved": {{$json.query.approved === 'true'}}, "responder": "ntfy", "reason": "approved via push notification"}`
-     (cast `approved` to an actual Boolean field, not a string)
+     `{"approved": {{$json.query.approved === 'true'}}, "responder": "ntfy", "reason": {{$json.query.approved === 'true' ? 'approved via push notification' : 'denied via push notification'}}}`
+     (cast `approved` to an actual Boolean field, not a string). Derive
+     `reason` from the same query param — a hardcoded "approved" string
+     makes every Deny look like an approval in the audit log.
    - False branch (timed out) → a **Set** node building
      `{"approved": false, "reason": "timed out"}`
 
@@ -264,21 +269,24 @@ steps 2–3 above), add these to `.env`:
 
 ```
 ENABLE_HUMAN_OVERRIDE=true
-N8N_OVERRIDE_WEBHOOK_URL=http://<your-lan-ip>:5690/webhook/override-a1e9f2
+N8N_OVERRIDE_WEBHOOK_URL=http://localhost:5690/webhook/override-a1e9f2
 N8N_OVERRIDE_SECRET=<the secret from step 3>
 OVERRIDE_TIMEOUT_SECONDS=600
 ```
-Use the LAN IP here, not `localhost` — even though `run_daily.py` and n8n
-run on the same Mac, this keeps it consistent with whatever
-`N8N_WEBHOOK_URL` n8n itself is using, which is what its Production URL
-will actually be bound to.
+Use `localhost` here, not the LAN IP. `run_daily.py` and n8n run on the
+same Mac and n8n listens on every interface, so this works regardless of
+what IP the router hands out. Only the phone-facing resume URLs need the
+LAN IP, and `scripts/start_n8n.sh` recomputes that on every start. A
+hardcoded LAN IP here silently breaks the override when DHCP reassigns
+the Mac's address — the POST just fails to connect and every blocked
+trade is auto-declined (this happened on 2026-09-25, .168 -> .226).
 
 Then test it deliberately, in this order, before trusting it in a real
 daily run:
 
 1. **Isolate the n8n side with curl first** (skip Python entirely):
    ```
-   curl -X POST http://<your-lan-ip>:5690/webhook/<your-path> -H "Content-Type: application/json" -H "X-Override-Secret: <your-secret>" -d '{"run_id":"test1","ticker":"AAPL","action":"buy","requested_size_pct":0.02,"existing_pct":0.05,"max_position_pct":0.05,"reasoning":"manual test","timeout_seconds":600}'
+   curl -X POST http://<your-lan-ip>:5690/webhook/<your-path> -H "Content-Type: application/json" -H "X-Override-Secret: <your-secret>" -d '{"run_id":"test1","ticker":"AAPL","action":"buy","message":"AAPL: buy 5 sh (~$1,704, 1.70% of equity) [manual test]","requested_size_pct":0.017,"requested_qty":5,"requested_notional":1704.4,"equity":100000,"existing_pct":0.05,"max_position_pct":0.05,"reasoning":"manual test","timeout_seconds":600}'
    ```
    Keep the `-d` JSON on **one line** — pasting a multi-line quoted string
    into an interactive terminal can get corrupted by the shell (extra

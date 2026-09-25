@@ -27,6 +27,11 @@ class RiskLimits:
     max_position_pct: float = 0.05
     max_daily_loss_pct: float = 0.02
     max_open_positions: int = 5
+    # Largest size_pct a human is ever even asked to approve via the
+    # max_position_pct override. Anything above this is treated as a
+    # malformed decision (e.g. the LLM writing 5.0 for "5%", i.e. 500%)
+    # and auto-declined without sending a notification.
+    max_override_size_pct: float = 0.10
     # Exit rules (agents/exit_rules.py). Placeholders, not tuned — validate
     # with backtest/runner.py before trusting them. At max_position_pct=0.05,
     # an 8% stop risks ~0.4% of equity per position.

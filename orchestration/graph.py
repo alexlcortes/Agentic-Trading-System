@@ -148,14 +148,33 @@ def risk_final_check_node(state: TradingState) -> dict:
             existing_value = float(
                 (portfolio_state.get("open_positions") or {}).get(decision["ticker"], 0.0)
             )
-            override_result = request_override(
-                run_id=state["run_id"],
-                ticker=decision["ticker"],
-                requested_size_pct=decision["size_pct"],
-                existing_pct=(existing_value / equity) if equity else 0.0,
-                max_position_pct=limits.max_position_pct,
-                reasoning=decision["reasoning"],
-            )
+            if decision["size_pct"] > limits.max_override_size_pct:
+                # Never ask a human to approve a size this large — it's far more
+                # likely a unit error (5.0 meaning "5%") than a real intent, and
+                # an approval tap shouldn't be the only thing standing between
+                # a bad number and the broker.
+                override_result = {
+                    "approved": False,
+                    "responder": None,
+                    "reason": (
+                        f"size_pct={decision['size_pct']:.4f} exceeds max_override_size_pct="
+                        f"{limits.max_override_size_pct:.4f} — treated as malformed, not sent for approval"
+                    ),
+                }
+            else:
+                price = _latest_price(state)
+                qty = shares_for(decision["size_pct"], equity, price)
+                override_result = request_override(
+                    run_id=state["run_id"],
+                    ticker=decision["ticker"],
+                    requested_size_pct=decision["size_pct"],
+                    requested_qty=qty,
+                    requested_notional=qty * price,
+                    equity=equity,
+                    existing_pct=(existing_value / equity) if equity else 0.0,
+                    max_position_pct=limits.max_position_pct,
+                    reasoning=decision["reasoning"],
+                )
             updates["human_override_result"] = override_result
 
         if override_result and override_result["approved"]:

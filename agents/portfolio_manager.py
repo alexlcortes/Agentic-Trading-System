@@ -13,7 +13,13 @@ logger = logging.getLogger(__name__)
 class PortfolioDecision(BaseModel):
     ticker: str
     action: Literal["buy", "sell", "hold"]
-    size_pct: float = Field(ge=0.0)
+    # Fraction of equity (0.05 = 5%). le=1.0 is a unit guard, not a risk
+    # limit: it rejects the model writing 5.0 for "5%" (i.e. 500%).
+    size_pct: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Fraction of account equity, e.g. 0.05 means 5%. Never a percentage number.",
+    )
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
@@ -116,7 +122,8 @@ def synthesize_decision(
             "",
             f"Risk manager note: {reasons_text} There is currently zero automatic headroom "
             "to add to this position. If the signals above still justify a buy, return "
-            "action='buy' with the size_pct you'd genuinely recommend anyway — it will NOT "
+            "action='buy' with the size_pct you'd genuinely recommend anyway, as a fraction "
+            "of equity (e.g. 0.02 for 2%, not 2.0) — it will NOT "
             "execute automatically; it will be routed to a human for manual override "
             "approval before any order is placed. If the signals don't justify overriding "
             "the limit, return action='hold' instead.",
@@ -135,6 +142,8 @@ def synthesize_decision(
         "into a single final trade decision. Weigh the technical signal as "
         "the primary driver, sentiment as a secondary input, and fundamentals "
         "(if given) as a minor, advisory input only. "
+        "size_pct is always a fraction of account equity: 0.05 means 5%, 0.02 means 2%. "
+        "Never write a percentage number like 5.0. "
     )
     system_content += (
         "Follow the risk manager note's instructions about the buy/hold choice."

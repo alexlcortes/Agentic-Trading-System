@@ -83,6 +83,8 @@ def log_human_override(
     requested_size_pct: float,
     timestamp,
     result: dict,
+    requested_qty: int | None = None,
+    requested_notional: float | None = None,
 ) -> None:
     """Append an entry recording a human-override request and its outcome
     (see agents.human_override) — approved, declined, or timed out, and by
@@ -94,6 +96,8 @@ def log_human_override(
         "run_id": run_id,
         "ticker": ticker,
         "requested_size_pct": requested_size_pct,
+        "requested_qty": requested_qty,
+        "requested_notional": requested_notional,
         "timestamp": _serialize_timestamp(timestamp),
         "result": result,
     }
