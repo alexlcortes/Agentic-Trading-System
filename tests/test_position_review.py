@@ -6,7 +6,7 @@ answer, live acts on a sell — and can only ever exit, never add.
 """
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
@@ -19,7 +19,7 @@ from agents.portfolio_manager import PositionReview
 from config import settings
 from config.settings import RiskLimits
 from logs import audit_logger
-from orchestration import graph
+from orchestration import confirmation, graph
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +27,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "kill_switch", False)
     monkeypatch.setattr(risk_manager, "KILL_SWITCH_FILE", tmp_path / "KILL_SWITCH")
     monkeypatch.setattr(audit_logger, "LOG_PATH", tmp_path / "trades.jsonl")
+    monkeypatch.setattr(confirmation, "LAST_PROPOSALS_PATH", tmp_path / "last_proposals.json")
     monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "shadow")
 
 
@@ -55,6 +56,10 @@ def _state(signal="hold", held=True, reason_code="hold"):
         "risk_check": {"approved": reason_code != risk_manager.REASON_MAX_POSITION_PCT,
                        "adjusted_size": 0.0, "reasons": [], "reason_code": reason_code},
     }
+
+
+def _sold_yesterday(*tickers):
+    confirmation.save_current(list(tickers), None, today=date.today() - timedelta(days=1))
 
 
 def _fake_review(monkeypatch, action="sell"):
@@ -138,13 +143,23 @@ def test_live_review_hold_does_not_cancel_an_override_buy(monkeypatch):
     assert updates["portfolio_decision"]["size_pct"] == 0.02
 
 
-def test_live_review_sell_wins_over_an_at_cap_buy(monkeypatch):
+def test_live_confirmed_review_sell_wins_over_an_at_cap_buy(monkeypatch):
     monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _sold_yesterday("GOOGL")
     _fake_review(monkeypatch, action="sell")
     _pm_decides(monkeypatch, "buy", size_pct=0.02)
     updates = graph.portfolio_manager_node(_at_cap_buy())
     assert updates["portfolio_decision"]["action"] == "sell"
     assert updates["portfolio_decision"]["size_pct"] == pytest.approx(0.041604)
+
+
+def test_live_first_day_sell_stops_an_at_cap_buy_from_adding(monkeypatch):
+    monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _fake_review(monkeypatch, action="sell")
+    _pm_decides(monkeypatch, "buy", size_pct=0.02)
+    decision = graph.portfolio_manager_node(_at_cap_buy())["portfolio_decision"]
+    assert (decision["action"], decision["size_pct"]) == ("hold", 0.0)
+    assert "awaiting a second" in decision["reasoning"]
 
 
 def test_mode_off_skips_the_review(monkeypatch):
@@ -163,8 +178,39 @@ def test_shadow_logs_a_sell_but_the_decision_stays_hold(monkeypatch):
     assert updates["portfolio_decision"]["action"] == "hold"
 
 
+def test_shadow_marks_a_first_day_sell_unconfirmed(monkeypatch):
+    _fake_review(monkeypatch)
+    assert graph.portfolio_manager_node(_state())["position_review"]["confirmed"] is False
+
+
+def test_shadow_marks_a_repeat_sell_confirmed(monkeypatch):
+    _sold_yesterday("GOOGL")
+    _fake_review(monkeypatch)
+    assert graph.portfolio_manager_node(_state())["position_review"]["confirmed"] is True
+
+
+def test_a_hold_carries_no_confirmation(monkeypatch):
+    _fake_review(monkeypatch, action="hold")
+    assert "confirmed" not in graph.portfolio_manager_node(_state())["position_review"]
+
+
+def test_live_first_day_sell_keeps_the_hold(monkeypatch):
+    monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _fake_review(monkeypatch)
+    updates = graph.portfolio_manager_node(_state())
+    assert updates["portfolio_decision"]["action"] == "hold"
+
+
+def test_live_sell_of_another_ticker_yesterday_does_not_confirm(monkeypatch):
+    monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _sold_yesterday("XOM")
+    _fake_review(monkeypatch)
+    assert graph.portfolio_manager_node(_state())["portfolio_decision"]["action"] == "hold"
+
+
 def test_live_sells_the_whole_position(monkeypatch):
     monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _sold_yesterday("GOOGL")
     calls = _fake_review(monkeypatch)
     updates = graph.portfolio_manager_node(_state())
     assert calls[0]["sell_size_pct"] == pytest.approx(0.041604)
@@ -174,6 +220,7 @@ def test_live_sells_the_whole_position(monkeypatch):
 
 def test_live_sell_passes_the_final_risk_check(monkeypatch):
     monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _sold_yesterday("GOOGL")
     _fake_review(monkeypatch)
     state = _state()
     state.update(graph.portfolio_manager_node(state))
@@ -297,12 +344,26 @@ def test_review_schema_cannot_return_a_buy():
         )
 
 
-def test_summary_line_for_a_shadow_sell():
-    review = {"mode": "shadow", "decision": {"action": "sell", "confidence": 0.7}}
-    lines = run_daily._position_review_lines(
+def _review_line(mode, confirmed):
+    review = {"mode": mode, "confirmed": confirmed, "decision": {"action": "sell", "confidence": 0.7}}
+    return run_daily._position_review_lines(
         [{"ticker": "GOOGL", "final_state": {"position_review": review}, "error": None}]
     )
-    assert lines == ["POSITION REVIEW (shadow): GOOGL SELL (confidence 0.7) — no order placed"]
+
+
+def test_summary_line_for_a_shadow_sell():
+    assert _review_line("shadow", False) == [
+        "POSITION REVIEW (shadow): GOOGL SELL (confidence 0.7, 1st day, needs a 2nd) — no order placed"
+    ]
+    assert _review_line("shadow", True) == [
+        "POSITION REVIEW (shadow): GOOGL SELL (confidence 0.7, 2nd day in a row) — no order placed"
+    ]
+
+
+def test_summary_line_for_a_live_first_day_sell():
+    assert _review_line("live", False) == [
+        "POSITION REVIEW (live): GOOGL SELL (confidence 0.7, 1st day, needs a 2nd) — not sold until confirmed"
+    ]
 
 
 def test_summary_line_labels_an_at_cap_buy_review():

@@ -3,8 +3,9 @@ signal on any other ticker is rejected outright — a forced hold with no LLM
 call — so nothing ever asks whether it beats something already held. After
 the watchlist loop, when every blocked candidate and every holding has
 today's signals, this asks the portfolio manager whether one swap is worth
-making, sizes it in code, runs both legs past the risk manager, and logs
-the result as type "rotation". It never places an order (ROTATION_MODE
+making, sizes it in code, runs both legs past the risk manager, marks
+whether the previous run proposed the same swap (orchestration.confirmation),
+and logs the result as type "rotation". It never places an order (ROTATION_MODE
 has no live setting yet).
 """
 
@@ -17,6 +18,7 @@ from config import settings
 from config.settings import RiskLimits
 from execution.alpaca_executor import get_portfolio_state
 from logs.audit_logger import log_rotation
+from orchestration.confirmation import rotation_swap_confirmed
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,7 @@ def shadow_rotation(
             if proposal["action"] == "swap":
                 prices = {c["ticker"]: float(c["final_state"]["price_data"]["Close"].iloc[-1]) for c in candidates}
                 record.update(_size_swap(proposal, portfolio_state, prices, limits))
+                record["confirmed"] = rotation_swap_confirmed(proposal["sell_ticker"], proposal["buy_ticker"], today)
     except Exception as exc:
         logger.exception("Shadow rotation failed — continuing with the normal run")
         record["error"] = str(exc)

@@ -55,6 +55,7 @@ from config.settings import RiskLimits
 from execution.alpaca_executor import _get_client, get_portfolio_state, reconcile_pending_orders
 from agents.exit_rules import check_exit
 from logs.audit_logger import log_exit_check, log_reconciliation
+from orchestration.confirmation import save_current
 from orchestration.graph import run_trading_cycle
 from orchestration.rotation import blocked_candidates, shadow_rotation
 
@@ -164,10 +165,39 @@ def _position_review_lines(entries: list[dict]) -> list[str]:
             lines.append(f"{label} skipped — {'; '.join(review['sell_check']['reasons'])}")
         else:
             decision = review["decision"]
-            verdict = "SELL" if decision["action"] == "sell" else "HOLD"
-            suffix = " — no order placed" if review["mode"] == "shadow" and verdict == "SELL" else ""
-            lines.append(f"{label} {verdict} (confidence {decision['confidence']}){suffix}")
+            if decision["action"] != "sell":
+                lines.append(f"{label} HOLD (confidence {decision['confidence']})")
+                continue
+            day = "2nd day in a row" if review.get("confirmed") else "1st day, needs a 2nd"
+            if review["mode"] == "shadow":
+                suffix = " — no order placed"
+            elif not review.get("confirmed"):
+                suffix = " — not sold until confirmed"
+            else:
+                suffix = ""
+            lines.append(f"{label} SELL (confidence {decision['confidence']}, {day}){suffix}")
     return lines
+
+def _save_proposals(results: list[dict], rotation: dict | None) -> None:
+    """Record this run's review sells and rotation swap, so the next run can
+    tell a repeat from a first day (orchestration.confirmation). Never raises."""
+    try:
+        review_sells = [
+            entry["ticker"]
+            for entry in results
+            if not entry["error"]
+            and ((entry["final_state"].get("position_review") or {}).get("decision") or {}).get("action") == "sell"
+        ]
+        proposal = (rotation or {}).get("proposal") or {}
+        swap = (
+            {"sell": proposal["sell_ticker"], "buy": proposal["buy_ticker"]}
+            if proposal.get("action") == "swap"
+            else None
+        )
+        save_current(review_sells, swap)
+    except Exception:
+        logger.exception("Saving this run's proposals failed — tomorrow's will all count as a first day")
+
 
 def _blocked_lines(entries: list[dict]) -> list[str]:
     """A forced hold reads like any other hold in the per-ticker lines, so
@@ -190,9 +220,10 @@ def _rotation_lines(rotation: dict | None) -> list[str]:
     proposal = rotation["proposal"]
     if proposal["action"] != "swap":
         return [f"{label} NO SWAP (confidence {proposal['confidence']})"]
+    day = "2nd day in a row" if rotation.get("confirmed") else "1st day, needs a 2nd"
     line = (
         f"{label} SWAP {proposal['sell_ticker']} → {proposal['buy_ticker']} "
-        f"(confidence {proposal['confidence']}) — no order placed"
+        f"(confidence {proposal['confidence']}, {day}) — no order placed"
     )
     if not rotation["would_execute"]:
         reasons = rotation["sell_check"]["reasons"] + rotation["buy_check"]["reasons"]
@@ -307,6 +338,7 @@ def run_once() -> list[dict]:
             results.append({"ticker": ticker, "final_state": None, "error": str(exc)})
 
     rotation = shadow_rotation(results, limits)
+    _save_proposals(results, rotation)
     _write_summary(results, exit_checks=exit_checks, rotation=rotation)
     return results
 

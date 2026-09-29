@@ -20,6 +20,7 @@ logs/*.log
 # execution/alpaca_executor.py's reconcile_pending_orders)
 logs/pending_orders.json
 logs/positions_meta.json
+logs/last_proposals.json
 
 # macOS
 .DS_Store

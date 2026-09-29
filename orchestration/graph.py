@@ -42,6 +42,7 @@ from agents.technical_agent import get_technical_signal
 from config import settings
 from config.settings import RiskLimits
 from logs.audit_logger import log_decision
+from orchestration.confirmation import review_sell_confirmed
 
 logger = logging.getLogger(__name__)
 
@@ -127,14 +128,32 @@ def portfolio_manager_node(state: TradingState) -> dict:
     if review is not None:
         updates["position_review"] = review
         reviewed = review.get("decision")
-        # A review sell always wins. A review hold only replaces a hold: after
-        # an at-cap buy the decision may be a buy bound for the human
-        # override, and "keep what you hold" says nothing against adding.
-        if review["mode"] == "live" and reviewed and (
-            reviewed["action"] == "sell" or decision["action"] == "hold"
-        ):
-            updates["portfolio_decision"] = reviewed
+        if review["mode"] == "live" and reviewed:
+            updates["portfolio_decision"] = _apply_review(decision, reviewed, review.get("confirmed"))
     return updates
+
+
+def _apply_review(decision: dict, reviewed: dict, confirmed: bool | None) -> dict:
+    """Live mode. A sell the previous run also proposed exits the position.
+    A first-day sell doesn't, but it does stop an at-cap buy from adding to
+    a position the review wants out of. A review hold only replaces a hold:
+    after an at-cap buy the decision may be a buy bound for the human
+    override, and "keep what you hold" says nothing against adding."""
+    if reviewed["action"] == "sell":
+        if confirmed:
+            return reviewed
+        if decision["action"] == "buy":
+            return {
+                **decision,
+                "action": "hold",
+                "size_pct": 0.0,
+                "reasoning": decision["reasoning"] + (
+                    " [Position review proposed selling (first day, awaiting a second) "
+                    "— not adding in the meantime]"
+                ),
+            }
+        return decision
+    return reviewed if decision["action"] == "hold" else decision
 
 
 def _review_trigger(state: TradingState) -> Optional[str]:
@@ -192,7 +211,10 @@ def _position_review(state: TradingState) -> Optional[dict]:
             sentiment_signal=state["sentiment_signal"],
             fundamentals_signal=state.get("fundamentals_signal"),
         )
-        return {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": decision}
+        review = {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": decision}
+        if decision["action"] == "sell":
+            review["confirmed"] = review_sell_confirmed(ticker)
+        return review
     except Exception as exc:
         logger.exception("Position review failed for %s — keeping the forced hold", ticker)
         return {"mode": mode, "trigger": trigger, "error": str(exc), "decision": None}

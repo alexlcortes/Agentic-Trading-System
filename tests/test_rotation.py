@@ -5,7 +5,7 @@ worth it, runs both legs past the risk manager, and logs it — never trades.
 """
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
@@ -17,7 +17,7 @@ from agents.portfolio_manager import _rotation_schema
 from config import settings
 from config.settings import RiskLimits
 from logs import audit_logger
-from orchestration import rotation
+from orchestration import confirmation, rotation
 
 HELD = ["AAPL", "GOOGL", "PG", "SPY", "XOM"]
 
@@ -27,6 +27,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "kill_switch", False)
     monkeypatch.setattr(risk_manager, "KILL_SWITCH_FILE", tmp_path / "KILL_SWITCH")
     monkeypatch.setattr(audit_logger, "LOG_PATH", tmp_path / "trades.jsonl")
+    monkeypatch.setattr(confirmation, "LAST_PROPOSALS_PATH", tmp_path / "last_proposals.json")
     monkeypatch.setattr(settings, "ROTATION_MODE", "shadow")
 
 
@@ -148,6 +149,23 @@ def test_a_swap_sells_the_whole_holding_and_buys_into_the_freed_slot(monkeypatch
     assert _logged()[0]["proposal"]["buy_ticker"] == "MSFT"
 
 
+def test_a_first_day_swap_is_unconfirmed(monkeypatch):
+    _fake_proposal(monkeypatch)
+    assert _run()["confirmed"] is False
+
+
+def test_the_same_swap_as_yesterday_is_confirmed(monkeypatch):
+    confirmation.save_current([], {"sell": "GOOGL", "buy": "MSFT"}, today=date.today() - timedelta(days=1))
+    _fake_proposal(monkeypatch)
+    assert _run()["confirmed"] is True
+
+
+def test_a_different_pair_yesterday_does_not_confirm(monkeypatch):
+    confirmation.save_current([], {"sell": "GOOGL", "buy": "JPM"}, today=date.today() - timedelta(days=1))
+    _fake_proposal(monkeypatch)
+    assert _run()["confirmed"] is False
+
+
 def test_a_swap_the_risk_manager_would_block_says_so(monkeypatch):
     monkeypatch.setattr(settings, "kill_switch", True)
     _fake_proposal(monkeypatch)
@@ -244,7 +262,7 @@ def test_summary_names_blocked_buys():
 def test_summary_line_for_a_swap(monkeypatch):
     _fake_proposal(monkeypatch)
     assert run_daily._rotation_lines(_run()) == [
-        "ROTATION (shadow): SWAP GOOGL → MSFT (confidence 0.7) — no order placed"
+        "ROTATION (shadow): SWAP GOOGL → MSFT (confidence 0.7, 1st day, needs a 2nd) — no order placed"
     ]
 
 
@@ -252,7 +270,9 @@ def test_summary_line_for_a_swap_the_risk_manager_would_block(monkeypatch):
     monkeypatch.setattr(settings, "kill_switch", True)
     _fake_proposal(monkeypatch)
     line = run_daily._rotation_lines(_run())[0]
-    assert line.startswith("ROTATION (shadow): SWAP GOOGL → MSFT (confidence 0.7) — no order placed [risk check would block:")
+    assert line.startswith(
+        "ROTATION (shadow): SWAP GOOGL → MSFT (confidence 0.7, 1st day, needs a 2nd) — no order placed [risk check would block:"
+    )
 
 
 def test_summary_line_for_no_swap(monkeypatch):

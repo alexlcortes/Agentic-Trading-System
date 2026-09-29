@@ -71,8 +71,9 @@ EXIT_REVIEW_MODE = os.getenv("EXIT_REVIEW_MODE", "shadow").strip().lower()
 # agents.portfolio_manager.review_position). "shadow" asks the model
 # hold-or-sell and logs its answer as agent_outputs.position_review in
 # trades.jsonl without acting on it; "live" makes a sell the run's decision
-# (still re-checked by risk_final_check) and a hold never cancels a buy;
-# "off" skips the call.
+# once the previous run proposed it too (orchestration.confirmation), still
+# re-checked by risk_final_check, and a hold never cancels a buy; "off"
+# skips the call.
 POSITION_REVIEW_MODE = os.getenv("POSITION_REVIEW_MODE", "shadow").strip().lower()
 
 # When the portfolio holds max_open_positions, a buy on any other ticker is
