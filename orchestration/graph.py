@@ -303,6 +303,32 @@ def route_after_human_gate(state: TradingState) -> str:
     return "proceed" if state.get("human_approved") else "skip"
 
 
+# A sell sized at or above the position's share of equity means "exit the
+# whole position". The risk manager rounds adjusted_size to 6 decimals, so
+# a full exit can come back up to 5e-7 under the exact fraction.
+FULL_EXIT_TOLERANCE = 1e-6
+
+
+def _order_qty(portfolio_state: dict, decision: dict, price: float) -> int:
+    """Whole shares to order. Buys are dollars / price. Sells are held shares:
+    a sell's size_pct comes from Alpaca's market value but price is the latest
+    yfinance close, so dollars / price can land one share off the real
+    position either way — leaving a 1-share stub on a full exit, or selling
+    shares that aren't held (including a pending buy that hasn't filled,
+    which open_positions counts as exposure)."""
+    equity = float(portfolio_state["equity"])
+    qty = shares_for(decision["size_pct"], equity, price)
+    if decision["action"] != "sell":
+        return qty
+
+    ticker = decision["ticker"]
+    position = (portfolio_state.get("position_details") or {}).get(ticker) or {}
+    held = int(float(position.get("qty", 0.0)))
+    existing_pct = float((portfolio_state.get("open_positions") or {}).get(ticker, 0.0)) / equity
+    if decision["size_pct"] >= existing_pct - FULL_EXIT_TOLERANCE:
+        return held
+    return min(qty, held)
+
 def execution_node(state: TradingState) -> dict:
     decision = state["portfolio_decision"]
     try:
@@ -321,10 +347,10 @@ def execution_node(state: TradingState) -> dict:
         }
 
     latest_price = _latest_price(state)
-    equity = float(state["portfolio_state"]["equity"])
-    qty = shares_for(decision["size_pct"], equity, latest_price)
+    qty = _order_qty(state["portfolio_state"], decision, latest_price)
 
-    # Backstop only: risk_final_check already rejects anything under one share.
+    # Backstop: risk_final_check already rejects anything under one share, but
+    # a sell also lands here when none of the position has filled yet.
     if qty <= 0:
         print(
             f"[execution] computed qty=0 for {decision['ticker']} "
