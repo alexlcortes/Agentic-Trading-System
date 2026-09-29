@@ -121,4 +121,23 @@ Three structural choices back the prompt up rather than trusting it:
 
 ---
 
+## 11. When the inputs were selected, tell the model how
+
+**Where:** `agents/portfolio_manager.py` (`propose_rotation`, `ROTATION_SYSTEM_PROMPT`, `_rotation_schema`), wired in `orchestration/rotation.py`
+
+Once the portfolio holds `max_open_positions`, a buy on any other ticker is rejected before the model sees it, so nothing ever asks whether the new idea beats something already held. Rotation asks that question after the watchlist loop, when every blocked candidate and every holding has today's signals: swap one holding for one candidate, or make no swap.
+
+The comparison is lopsided before the model reads a word. Every candidate is on the list *because* it has a buy signal; holdings appear with whatever signal they have today, usually "hold." Laid side by side, "buy" next to "hold" reads as "the candidate is better," but the labels only restate how the list was built. That's selection bias, and the model can't see it unless told. So the prompt says it outright — "every candidate has a buy signal because that is how candidates are chosen … the label alone is not evidence" — and points the model at what *is* comparable: the confidence and reasoning behind each signal.
+
+The same asymmetry argues for a default. A swap is two trades made on one day's signal, while "no swap" costs nothing today, so the prompt makes no-swap the default and asks for a candidate that is "clearly stronger, not merely comparable." Holdings get the same "would you buy it today?" framing and the same P&L warning as the position review (pattern #10). They are shown without the reasoning from the day they were bought: the review showed that reasoning, and its answers came back defending the original thesis rather than judging the position fresh.
+
+As in the review, structure backs the prompt up:
+
+- **The schema only accepts real tickers.** It is built per call, with the candidates as the only buy options and the holdings as the only sell options, so a swap naming a stock that isn't in play can't be returned. It uses enums, not `Literal`s: a single-ticker `Literal` becomes a JSON-schema `const`, while an enum stays an `enum` for any count.
+- **The model picks the pair; code does the rest.** The sell is the whole position, and both legs go through `check_trade`, the buy against the portfolio as it would be after the sell. A swap the risk manager would block is logged as such.
+
+**Why it matters:** a prompt can be neutral in every word and still stack the deck, because the *data* arrives pre-sorted. Whenever code filters what the model sees — only the blocked buys, only the flagged trades, only the top results — the filter is part of the evidence, and the model reads it as a signal unless told what it is. A first check against real holdings showed the risk: on a borderline input (a 0.78 buy candidate against a 0.83 hold), five identical calls split 2 swaps to 3 no-swaps. That's why it ships as shadow only (`ROTATION_MODE=shadow`, with no live setting at all), until the logs show how often it proposes swaps and whether the swaps it proposed would have helped.
+
+---
+
 *(More patterns will be added here as later phases — going live — surface new ones worth naming.)*

@@ -153,3 +153,20 @@ def log_exit_check(
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_PATH, "a") as f:
         f.write(json.dumps(entry, default=str) + "\n")
+
+
+def log_rotation(record: dict, timestamp=None) -> None:
+    """Append an entry recording one rotation check (see
+    orchestration.rotation): the buys blocked because the portfolio was
+    full, the holdings they were weighed against, the model's proposal, and
+    — for a swap — both legs' risk checks. mode "shadow" means no order was
+    placed, whatever the proposal says."""
+    entry = {
+        "type": "rotation",
+        "timestamp": _serialize_timestamp(timestamp or datetime.now(timezone.utc)),
+        **record,
+    }
+
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOG_PATH, "a") as f:
+        f.write(json.dumps(entry, default=str) + "\n")

@@ -25,6 +25,11 @@ each ticker's later exit_check entries after a would_exit:
 Any such line followed by a real sell execution_result for the same ticker
 means a shadow exit leaked into trading, which should be impossible.
 
+Rotation (orchestration/rotation.py) is shadow-only too: when buys were
+blocked because the portfolio is full, it logs whether the portfolio
+manager would swap one holding for one of them, as type "rotation":
+    grep '"type": "rotation"' logs/trades.jsonl
+
 LIVE MODE: this script never forces auto_execute=True except in paper
 mode. If ALPACA_BASE_URL points at live and auto_execute=True (e.g. left
 over from paper testing), it refuses to run at all — live trading always
@@ -51,6 +56,7 @@ from execution.alpaca_executor import _get_client, get_portfolio_state, reconcil
 from agents.exit_rules import check_exit
 from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.graph import run_trading_cycle
+from orchestration.rotation import blocked_candidates, shadow_rotation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -163,8 +169,42 @@ def _position_review_lines(entries: list[dict]) -> list[str]:
             lines.append(f"{label} {verdict} (confidence {decision['confidence']}){suffix}")
     return lines
 
+def _blocked_lines(entries: list[dict]) -> list[str]:
+    """A forced hold reads like any other hold in the per-ticker lines, so
+    name the buys the full portfolio turned away."""
+    return [
+        f"BLOCKED (portfolio full): {entry['ticker']} technical buy "
+        f"(confidence {entry['final_state']['technical_signal'].get('confidence')})"
+        for entry in blocked_candidates(entries)
+    ]
+
+
+def _rotation_lines(rotation: dict | None) -> list[str]:
+    if not rotation:
+        return []
+    label = f"ROTATION ({rotation['mode']}):"
+    if rotation.get("error"):
+        return [f"{label} ERROR — {rotation['error']}"]
+    if rotation.get("skipped"):
+        return [f"{label} skipped — {rotation['skipped']}"]
+    proposal = rotation["proposal"]
+    if proposal["action"] != "swap":
+        return [f"{label} NO SWAP (confidence {proposal['confidence']})"]
+    line = (
+        f"{label} SWAP {proposal['sell_ticker']} → {proposal['buy_ticker']} "
+        f"(confidence {proposal['confidence']}) — no order placed"
+    )
+    if not rotation["would_execute"]:
+        reasons = rotation["sell_check"]["reasons"] + rotation["buy_check"]["reasons"]
+        line += f" [risk check would block: {'; '.join(reasons)}]"
+    return [line]
+
+
 def _write_summary(
-    entries: list[dict], skip_reason: str | None = None, exit_checks: list[dict] | None = None
+    entries: list[dict],
+    skip_reason: str | None = None,
+    exit_checks: list[dict] | None = None,
+    rotation: dict | None = None,
 ) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     lines = [f"\n=== {timestamp} ==="]
@@ -187,6 +227,8 @@ def _write_summary(
                 f"execution={execution}"
             )
 
+    lines += _blocked_lines(entries)
+    lines += _rotation_lines(rotation)
     lines += _position_review_lines(entries)
     lines += _exit_summary_lines(exit_checks or [])
 
@@ -264,7 +306,8 @@ def run_once() -> list[dict]:
             logger.exception("run_daily: %s failed", ticker)
             results.append({"ticker": ticker, "final_state": None, "error": str(exc)})
 
-    _write_summary(results, exit_checks=exit_checks)
+    rotation = shadow_rotation(results, limits)
+    _write_summary(results, exit_checks=exit_checks, rotation=rotation)
     return results
 
 

@@ -75,6 +75,13 @@ EXIT_REVIEW_MODE = os.getenv("EXIT_REVIEW_MODE", "shadow").strip().lower()
 # "off" skips the call.
 POSITION_REVIEW_MODE = os.getenv("POSITION_REVIEW_MODE", "shadow").strip().lower()
 
+# When the portfolio holds max_open_positions, a buy on any other ticker is
+# rejected outright. "shadow" asks the portfolio manager, after the watchlist
+# loop, whether to swap one holding for one of those blocked buys, and logs
+# the proposal as type "rotation" in trades.jsonl without trading on it
+# (see orchestration.rotation); "off" skips it. There is no live setting yet.
+ROTATION_MODE = os.getenv("ROTATION_MODE", "shadow").strip().lower()
+
 # Human-in-the-loop override for trades the risk manager blocks solely for
 # hitting max_position_pct (see agents.human_override). Off by default so a
 # missing/unconfigured webhook never changes existing hold-on-reject

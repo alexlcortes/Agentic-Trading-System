@@ -1,9 +1,10 @@
 import logging
 from datetime import date
-from typing import Literal
+from enum import Enum
+from typing import Literal, Optional
 
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from agents.risk_manager import REASON_MAX_POSITION_PCT
 from config import settings
@@ -210,6 +211,27 @@ def synthesize_decision(
     return result
 
 
+def _position_lines(position: dict, today: date) -> list[str]:
+    """A held position as the review and rotation prompts both describe it.
+    position is one entry of portfolio_state["position_details"]."""
+    entry_price = float(position["avg_entry_price"])
+    current_price = float(position["current_price"])
+    high_water_mark = max(float(position.get("high_water_mark") or 0.0), current_price)
+    opened_at = position.get("opened_at")
+    held = (
+        f"{(today - date.fromisoformat(opened_at)).days} days (opened {opened_at})"
+        if opened_at
+        else "unknown"
+    )
+    return [
+        f"- {position['qty']:g} shares, entry ${entry_price:,.2f}, now ${current_price:,.2f} "
+        f"(unrealized {float(position['unrealized_plpc']):+.2%})",
+        f"- held {held}",
+        f"- {1 - current_price / high_water_mark:.2%} below its highest close since entry "
+        f"(${high_water_mark:,.2f})",
+    ]
+
+
 class PositionReview(BaseModel):
     # hold/sell only: a review can exit a position, but never add to one. No size field — the exit is
     # all-or-nothing and sized in code, so the model only makes the call.
@@ -263,27 +285,12 @@ def review_position(
     sell_size_pct is the risk manager's approved size for selling all of it.
     The prompt design reasoning lives in PROMPT_PATTERNS.md.
     """
-    today = today or date.today()
-    entry_price = float(position["avg_entry_price"])
-    current_price = float(position["current_price"])
-    high_water_mark = max(float(position.get("high_water_mark") or 0.0), current_price)
-    opened_at = position.get("opened_at")
-    held = (
-        f"{(today - date.fromisoformat(opened_at)).days} days (opened {opened_at})"
-        if opened_at
-        else "unknown"
-    )
-
     prompt_sections = [
         f"Ticker: {ticker}",
         *_signal_sections(technical_signal, sentiment_signal, fundamentals_signal),
         "",
         "Current position (you already hold this):",
-        f"- {position['qty']:g} shares, entry ${entry_price:,.2f}, now ${current_price:,.2f} "
-        f"(unrealized {float(position['unrealized_plpc']):+.2%})",
-        f"- held {held}",
-        f"- {1 - current_price / high_water_mark:.2%} below its highest close since entry "
-        f"(${high_water_mark:,.2f})",
+        *_position_lines(position, today or date.today()),
         f"- why it was bought: {entry_reasoning or 'not recorded'}",
         "",
         f"Why this review: {REVIEW_TRIGGER_NOTES[trigger]}",
@@ -308,4 +315,99 @@ def review_position(
         "size_pct": sell_size_pct if review.action == "sell" else 0.0,
         "confidence": review.confidence,
         "reasoning": review.reasoning,
+    }
+
+
+ROTATION_SYSTEM_PROMPT = (
+    "You are a portfolio manager. The portfolio holds its maximum number of positions, "
+    "so a new stock can only be bought by selling one already held. The candidates below "
+    "got a buy signal today and were blocked only because the portfolio is full. Decide "
+    "whether to swap one holding for one candidate, or make no swap. No swap is the "
+    "default: a swap means two trades and giving up a position on the strength of one "
+    "day's signal, so propose one only when a candidate is clearly stronger than the "
+    "holding it would replace, not merely comparable. Every candidate has a buy signal "
+    "because that is how candidates are chosen, while holdings are shown with whatever "
+    "signal they have today — so the label alone is not evidence that a candidate is "
+    "better; compare the confidence and reasoning behind each signal. Judge each holding "
+    "as if choosing whether to buy it today at the current price: entry price and "
+    "unrealized P&L are context, not reasons, so 'it is down' is not a reason to sell it "
+    "and 'it is up' is not a reason to keep it. Stop-losses and trailing stops are handled "
+    "separately by fixed rules. Weigh the technical signal as the primary driver, "
+    "sentiment as a secondary input, and fundamentals (if given) as a minor, advisory "
+    "input only."
+)
+
+
+def _rotation_schema(candidates: list[str], holdings: list[str]) -> type[BaseModel]:
+    """Built per call so the model can only name a ticker that is actually a
+    candidate (to buy) or a holding (to sell). No size fields: a swap sells
+    the whole holding and code sizes the buy. Enums, not Literals: a
+    one-ticker Literal becomes a JSON-schema "const", an enum stays "enum"."""
+    sell = Enum("HoldingTicker", {t: t for t in holdings}, type=str)
+    buy = Enum("CandidateTicker", {t: t for t in candidates}, type=str)
+    return create_model(
+        "RotationProposal",
+        action=(Literal["swap", "no_swap"], ...),
+        sell_ticker=(Optional[sell], ...),
+        buy_ticker=(Optional[buy], ...),
+        confidence=(float, Field(ge=0.0, le=1.0)),
+        reasoning=(str, ...),
+    )
+
+
+def propose_rotation(candidates: list[dict], holdings: list[dict], today: date | None = None) -> dict:
+    """Ask the LLM whether to swap one held position for one buy that was
+    blocked because the portfolio is full. candidates are
+    {"ticker", "technical_signal", "sentiment_signal", "fundamentals_signal"};
+    holdings are {"ticker", "position", "signals"}, where signals has the same
+    three keys or is None when the ticker had no run today. Returns
+    {"action", "sell_ticker", "buy_ticker", "confidence", "reasoning"}, with
+    both tickers None unless the action is a complete swap.
+    The prompt design reasoning lives in PROMPT_PATTERNS.md.
+    """
+    today = today or date.today()
+    prompt_sections = ["Candidates (buy signal today, blocked because the portfolio is full):"]
+    for c in candidates:
+        prompt_sections += [
+            "",
+            f"=== Candidate: {c['ticker']} ===",
+            *_signal_sections(c["technical_signal"], c["sentiment_signal"], c.get("fundamentals_signal")),
+        ]
+    prompt_sections += ["", "Holdings (a swap sells the whole position):"]
+    for h in holdings:
+        signals = h.get("signals")
+        prompt_sections += ["", f"=== Holding: {h['ticker']} ==="]
+        if signals:
+            prompt_sections += _signal_sections(
+                signals["technical_signal"], signals["sentiment_signal"], signals.get("fundamentals_signal")
+            )
+        else:
+            prompt_sections += ["", "No signals today (not analyzed in this run)."]
+        prompt_sections += ["", "Position:", *_position_lines(h["position"], today)]
+    prompt_sections += [
+        "",
+        "Return action='swap' with the holding to sell and the candidate to buy, "
+        "or action='no_swap' with both left null.",
+    ]
+
+    schema = _rotation_schema([c["ticker"] for c in candidates], [h["ticker"] for h in holdings])
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    completion = client.chat.completions.parse(
+        model=settings.OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": ROTATION_SYSTEM_PROMPT},
+            {"role": "user", "content": "\n".join(prompt_sections)},
+        ],
+        response_format=schema,
+    )
+    proposal = completion.choices[0].message.parsed
+
+    # A swap missing either side is not a swap.
+    swap = proposal.action == "swap" and proposal.sell_ticker and proposal.buy_ticker
+    return {
+        "action": "swap" if swap else "no_swap",
+        "sell_ticker": proposal.sell_ticker.value if swap else None,
+        "buy_ticker": proposal.buy_ticker.value if swap else None,
+        "confidence": proposal.confidence,
+        "reasoning": proposal.reasoning,
     }
