@@ -211,16 +211,6 @@ def test_a_failed_review_keeps_the_forced_hold(monkeypatch):
     assert updates["portfolio_decision"]["action"] == "hold"
 
 
-def test_entry_reasoning_is_looked_up_from_the_entry_run(monkeypatch):
-    audit_logger.log_decision(
-        run_id="entry-run", timestamp="2026-09-22", agent_outputs={},
-        final_decision={"action": "buy", "reasoning": "MACD crossover"}, execution_result=None,
-    )
-    calls = _fake_review(monkeypatch)
-    graph.portfolio_manager_node(_state())
-    assert calls[0]["entry_reasoning"] == "MACD crossover"
-
-
 def test_review_is_logged_on_the_run_entry(monkeypatch):
     _fake_review(monkeypatch)
     state = _state()
@@ -232,7 +222,10 @@ def test_review_is_logged_on_the_run_entry(monkeypatch):
 
 def _fake_llm(monkeypatch, action):
     sent = {}
-    parsed = PositionReview(action=action, confidence=0.6, reasoning="r")
+    parsed = PositionReview(
+        case_for_owning="for", case_against_owning="against",
+        action=action, confidence=0.6, reasoning="r",
+    )
     completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
 
     def parse(**kwargs):
@@ -244,22 +237,21 @@ def _fake_llm(monkeypatch, action):
     return sent
 
 
-def _review(entry_reasoning="MACD crossover", trigger="technical_hold"):
+def _review(trigger="technical_hold"):
     return portfolio_manager.review_position(
         ticker="GOOGL", position=_position(), sell_size_pct=0.04,
         technical_signal={"signal": "hold"}, sentiment_signal={"sentiment": "neutral"},
-        entry_reasoning=entry_reasoning, today=date(2026, 9, 29), trigger=trigger,
+        today=date(2026, 9, 29), trigger=trigger,
     )
 
 
-def test_review_prompt_shows_the_position_and_why_it_was_bought(monkeypatch):
+def test_review_prompt_shows_the_position(monkeypatch):
     sent = _fake_llm(monkeypatch, "hold")
     _review()
     prompt = sent["messages"][1]["content"]
     assert "12 shares, entry $362.40, now $346.70 (unrealized -4.33%)" in prompt
     assert "held 7 days (opened 2026-09-22)" in prompt
     assert "1.27% below its highest close since entry ($351.16)" in prompt
-    assert "why it was bought: MACD crossover" in prompt
 
 
 @pytest.mark.parametrize("trigger", ["technical_hold", "at_cap_buy"])
@@ -271,10 +263,24 @@ def test_review_prompt_says_why_the_review_is_running(monkeypatch, trigger):
     assert f"Why this review: {note}" in sent["messages"][1]["content"]
 
 
-def test_missing_entry_reasoning_says_so(monkeypatch):
+def test_review_prompt_leaves_out_why_it_was_bought(monkeypatch):
+    # The entry reasoning anchored the review on "is the original thesis
+    # still intact?" instead of today's evidence — see PROMPT_PATTERNS.md #10.
     sent = _fake_llm(monkeypatch, "hold")
-    _review(entry_reasoning=None)
-    assert "why it was bought: not recorded" in sent["messages"][1]["content"]
+    _review()
+    assert "why it was bought" not in sent["messages"][1]["content"]
+
+
+def test_both_cases_are_argued_before_the_action():
+    fields = list(PositionReview.model_fields)
+    assert fields.index("case_against_owning") < fields.index("action")
+    assert fields.index("case_for_owning") < fields.index("action")
+
+
+def test_both_cases_are_kept_on_the_decision(monkeypatch):
+    _fake_llm(monkeypatch, "sell")
+    decision = _review()
+    assert (decision["case_for_owning"], decision["case_against_owning"]) == ("for", "against")
 
 
 @pytest.mark.parametrize("action, size", [("sell", 0.04), ("hold", 0.0)])
@@ -285,7 +291,10 @@ def test_size_is_set_in_code_not_by_the_model(monkeypatch, action, size):
 
 def test_review_schema_cannot_return_a_buy():
     with pytest.raises(ValidationError):
-        PositionReview(action="buy", confidence=0.9, reasoning="x")
+        PositionReview(
+            case_for_owning="f", case_against_owning="a",
+            action="buy", confidence=0.9, reasoning="x",
+        )
 
 
 def test_summary_line_for_a_shadow_sell():

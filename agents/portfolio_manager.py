@@ -233,8 +233,14 @@ def _position_lines(position: dict, today: date) -> list[str]:
 
 
 class PositionReview(BaseModel):
-    # hold/sell only: a review can exit a position, but never add to one. No size field — the exit is
-    # all-or-nothing and sized in code, so the model only makes the call.
+    # Both cases come before the action: fields are generated in order, so
+    # the model has argued against owning the stock before it decides,
+    # rather than weighing only whether something has "clearly broken".
+    case_for_owning: str
+    case_against_owning: str
+    # hold/sell only: a review can exit a position, but never add to one. No
+    # size field — the exit is all-or-nothing and sized in code, so the model
+    # only makes the call.
     action: Literal["hold", "sell"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
@@ -252,14 +258,20 @@ REVIEW_TRIGGER_NOTES = {
 
 REVIEW_SYSTEM_PROMPT = (
     "You are a portfolio manager reviewing a position you already hold. Adding to "
-    "it is not an option here; your job is to decide whether the position still "
-    "deserves its place in the portfolio. Decide as if you did not own it and were "
-    "choosing whether to buy it today at the current price. The entry price and "
-    "unrealized P&L are context, not reasons: 'it is down, wait for it to come back' "
-    "and 'it is up, lock in the gain' are not valid justifications on their own. "
-    "Compare the original reason for buying with today's signals — if that reason "
-    "no longer holds, sell; if it still holds, hold. Stop-losses and trailing stops "
-    "are handled separately by fixed rules, so do not act as one. Weigh the "
+    "it is not an option here; your job is to decide whether to keep it or exit it, "
+    "judged on today's evidence. First make the case for owning this stock based on "
+    "today's signals, then make the case against owning it, each as strongly as the "
+    "evidence honestly allows — as if you were seeing the stock for the first time. "
+    "Then decide which case is stronger. Neither side needs to be decisive: sell if "
+    "the case against is stronger, hold if the case for is stronger. Only when the "
+    "two are genuinely about equal, hold — because exiting and re-entering has a "
+    "cost — and say that is why; a mix of weak points on both sides is not "
+    "automatically equal, so weigh them. 'Nothing has clearly broken' is not a "
+    "reason to hold, just as 'it has not moved yet' is not a reason to sell. The "
+    "entry price and unrealized P&L are context, not reasons: 'it is down, wait for "
+    "it to come back' and 'it is up, lock in the gain' are not valid justifications "
+    "on their own. Stop-losses and trailing stops are handled separately by fixed "
+    "rules, so do not act as one. Weigh the "
     "technical signal as the primary driver, sentiment as a secondary input, and "
     "fundamentals (if given) as a minor, advisory input only."
 )
@@ -271,7 +283,6 @@ def review_position(
     sell_size_pct: float,
     technical_signal: dict,
     sentiment_signal: dict,
-    entry_reasoning: str | None,
     fundamentals_signal: dict | None = None,
     today: date | None = None,
     trigger: str = "technical_hold",
@@ -291,11 +302,11 @@ def review_position(
         "",
         "Current position (you already hold this):",
         *_position_lines(position, today or date.today()),
-        f"- why it was bought: {entry_reasoning or 'not recorded'}",
         "",
         f"Why this review: {REVIEW_TRIGGER_NOTES[trigger]}",
         "",
-        "Return action='sell' to exit the whole position, or action='hold' to keep it.",
+        "Make the case for owning it, then the case against, then return action='sell' "
+        "to exit the whole position or action='hold' to keep it.",
     ]
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -315,6 +326,8 @@ def review_position(
         "size_pct": sell_size_pct if review.action == "sell" else 0.0,
         "confidence": review.confidence,
         "reasoning": review.reasoning,
+        "case_for_owning": review.case_for_owning,
+        "case_against_owning": review.case_against_owning,
     }
 
 

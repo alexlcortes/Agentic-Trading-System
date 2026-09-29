@@ -41,7 +41,7 @@ from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
 from config.settings import RiskLimits
-from logs.audit_logger import find_final_decision, log_decision
+from logs.audit_logger import log_decision
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +183,6 @@ def _position_review(state: TradingState) -> Optional[dict]:
         if not sell_check["approved"]:
             return {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": None}
 
-        entry_run_id = position.get("entry_run_id")
-        entry_decision = find_final_decision(entry_run_id) if entry_run_id else None
         decision = review_position(
             ticker=ticker,
             position=position,
@@ -192,7 +190,6 @@ def _position_review(state: TradingState) -> Optional[dict]:
             sell_size_pct=sell_check["adjusted_size"],
             technical_signal=state["technical_signal"],
             sentiment_signal=state["sentiment_signal"],
-            entry_reasoning=(entry_decision or {}).get("reasoning"),
             fundamentals_signal=state.get("fundamentals_signal"),
         )
         return {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": decision}
