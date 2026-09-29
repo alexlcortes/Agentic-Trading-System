@@ -60,7 +60,7 @@ class TradingState(TypedDict, total=False):
     risk_check: dict  # precheck, ceiling for the portfolio manager's prompt
     portfolio_decision: dict
     risk_check_final: dict  # authoritative gate on the actual final decision
-    position_review: Optional[dict]  # held position + technical hold; see _position_review
+    position_review: Optional[dict]  # held position, technical hold or at-cap buy; see _position_review
 
     human_approved: bool
     human_gate_note: str
@@ -126,15 +126,33 @@ def portfolio_manager_node(state: TradingState) -> dict:
     review = _position_review(state)
     if review is not None:
         updates["position_review"] = review
-        if review["mode"] == "live" and review.get("decision"):
-            updates["portfolio_decision"] = review["decision"]
+        reviewed = review.get("decision")
+        # A review sell always wins. A review hold only replaces a hold: after
+        # an at-cap buy the decision may be a buy bound for the human
+        # override, and "keep what you hold" says nothing against adding.
+        if review["mode"] == "live" and reviewed and (
+            reviewed["action"] == "sell" or decision["action"] == "hold"
+        ):
+            updates["portfolio_decision"] = reviewed
     return updates
 
 
+def _review_trigger(state: TradingState) -> Optional[str]:
+    """Why a held position gets a review, or None if it doesn't: the technical
+    signal says hold, or it says buy but the position is already at its cap —
+    both end without anything weighing the position itself."""
+    signal = state["technical_signal"]["signal"]
+    if signal == "hold":
+        return "technical_hold"
+    if signal == "buy" and state["risk_check"].get("reason_code") == REASON_MAX_POSITION_PCT:
+        return "at_cap_buy"
+    return None
+
+
 def _position_review(state: TradingState) -> Optional[dict]:
-    """For a held position the technical signal says to hold, ask the
-    portfolio manager whether to keep it (see settings.POSITION_REVIEW_MODE).
-    Only ever proposes hold or a full exit — never a buy against a hold.
+    """For a held position the technical signal says to hold, or says to buy
+    past its cap, ask the portfolio manager whether to keep it (see
+    settings.POSITION_REVIEW_MODE). Only ever proposes hold or a full exit.
 
     Never raises: in shadow mode a failure here must not cost the run, and in
     live mode the fallback is the forced hold the run already has.
@@ -145,7 +163,8 @@ def _position_review(state: TradingState) -> Optional[dict]:
     position = (portfolio_state.get("position_details") or {}).get(ticker)
     if mode not in ("shadow", "live") or position is None:
         return None
-    if state["technical_signal"]["signal"] != "hold":
+    trigger = _review_trigger(state)
+    if trigger is None:
         return None
 
     try:
@@ -162,23 +181,24 @@ def _position_review(state: TradingState) -> Optional[dict]:
             _limits(state),
         )
         if not sell_check["approved"]:
-            return {"mode": mode, "sell_check": sell_check, "decision": None}
+            return {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": None}
 
         entry_run_id = position.get("entry_run_id")
         entry_decision = find_final_decision(entry_run_id) if entry_run_id else None
         decision = review_position(
             ticker=ticker,
             position=position,
+            trigger=trigger,
             sell_size_pct=sell_check["adjusted_size"],
             technical_signal=state["technical_signal"],
             sentiment_signal=state["sentiment_signal"],
             entry_reasoning=(entry_decision or {}).get("reasoning"),
             fundamentals_signal=state.get("fundamentals_signal"),
         )
-        return {"mode": mode, "sell_check": sell_check, "decision": decision}
+        return {"mode": mode, "trigger": trigger, "sell_check": sell_check, "decision": decision}
     except Exception as exc:
         logger.exception("Position review failed for %s — keeping the forced hold", ticker)
-        return {"mode": mode, "error": str(exc), "decision": None}
+        return {"mode": mode, "trigger": trigger, "error": str(exc), "decision": None}
 
 
 def risk_final_check_node(state: TradingState) -> dict:

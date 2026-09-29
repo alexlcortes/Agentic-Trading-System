@@ -150,7 +150,8 @@ def _position_review_lines(entries: list[dict]) -> list[str]:
         review = (entry.get("final_state") or {}).get("position_review")
         if not review:
             continue
-        label = f"POSITION REVIEW ({review['mode']}): {entry['ticker']}"
+        trigger = ", at-cap buy" if review.get("trigger") == "at_cap_buy" else ""
+        label = f"POSITION REVIEW ({review['mode']}{trigger}): {entry['ticker']}"
         if review.get("error"):
             lines.append(f"{label} ERROR — {review['error']}")
         elif review.get("decision") is None:

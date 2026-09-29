@@ -211,17 +211,26 @@ def synthesize_decision(
 
 
 class PositionReview(BaseModel):
-    # hold/sell only: a review can exit a position the technical signal says
-    # to leave alone, but never add to one. No size field — the exit is
+    # hold/sell only: a review can exit a position, but never add to one. No size field — the exit is
     # all-or-nothing and sized in code, so the model only makes the call.
     action: Literal["hold", "sell"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
 
+# Why the review is running, stated to the model: the technical signal it sees
+# may be a hold or a buy, and a buy must not read as a case for adding.
+REVIEW_TRIGGER_NOTES = {
+    "technical_hold": "The technical signal says hold, so nothing else weighs this position today.",
+    "at_cap_buy": (
+        "The technical signal says buy, but the position is already at its size cap, "
+        "so adding is not an option. Decide only whether to keep what you hold."
+    ),
+}
+
 REVIEW_SYSTEM_PROMPT = (
-    "You are a portfolio manager reviewing a position you already hold. The "
-    "technical signal says hold; your job is to decide whether the position still "
+    "You are a portfolio manager reviewing a position you already hold. Adding to "
+    "it is not an option here; your job is to decide whether the position still "
     "deserves its place in the portfolio. Decide as if you did not own it and were "
     "choosing whether to buy it today at the current price. The entry price and "
     "unrealized P&L are context, not reasons: 'it is down, wait for it to come back' "
@@ -243,10 +252,12 @@ def review_position(
     entry_reasoning: str | None,
     fundamentals_signal: dict | None = None,
     today: date | None = None,
+    trigger: str = "technical_hold",
 ) -> dict:
-    """Ask the LLM whether to keep a held position that the technical signal
-    would otherwise leave alone (a forced hold with no LLM call). Returns a
-    decision in the same shape as synthesize_decision.
+    """Ask the LLM whether to keep a held position that nothing else would
+    reconsider: a technical hold (a forced hold with no LLM call) or a buy
+    blocked at the position cap. Returns a decision in the same shape as
+    synthesize_decision.
 
     position is one entry of portfolio_state["position_details"];
     sell_size_pct is the risk manager's approved size for selling all of it.
@@ -274,6 +285,8 @@ def review_position(
         f"- {1 - current_price / high_water_mark:.2%} below its highest close since entry "
         f"(${high_water_mark:,.2f})",
         f"- why it was bought: {entry_reasoning or 'not recorded'}",
+        "",
+        f"Why this review: {REVIEW_TRIGGER_NOTES[trigger]}",
         "",
         "Return action='sell' to exit the whole position, or action='hold' to keep it.",
     ]

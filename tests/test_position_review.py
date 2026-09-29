@@ -1,7 +1,8 @@
 """Position review: a held position whose technical signal is "hold" used to
-end in a forced hold with no LLM call, so nothing ever reconsidered it. The
-review asks the portfolio manager hold-or-sell — shadow logs the answer,
-live acts on it — and can only ever exit, never add.
+end in a forced hold with no LLM call, and one whose signal is "buy" at the
+position cap was only ever asked about adding — so nothing reconsidered
+either. The review asks the portfolio manager hold-or-sell — shadow logs the
+answer, live acts on a sell — and can only ever exit, never add.
 """
 
 import json
@@ -37,7 +38,7 @@ def _position():
     }
 
 
-def _state(signal="hold", held=True):
+def _state(signal="hold", held=True, reason_code="hold"):
     return {
         "run_id": "test",
         "ticker": "GOOGL",
@@ -51,7 +52,8 @@ def _state(signal="hold", held=True):
         "price_data": pd.DataFrame({"Close": [346.70]}),
         "technical_signal": {"signal": signal, "confidence": 0.83, "reasoning": "flat"},
         "sentiment_signal": {"sentiment": "neutral", "confidence": 0.4, "reasoning": "mixed"},
-        "risk_check": {"approved": True, "adjusted_size": 0.0, "reasons": [], "reason_code": "hold"},
+        "risk_check": {"approved": reason_code != risk_manager.REASON_MAX_POSITION_PCT,
+                       "adjusted_size": 0.0, "reasons": [], "reason_code": reason_code},
     }
 
 
@@ -89,6 +91,60 @@ def test_non_hold_signals_are_not_reviewed(monkeypatch, signal):
     updates = graph.portfolio_manager_node(_state(signal))
     assert calls == []
     assert "position_review" not in updates
+
+
+def _pm_decides(monkeypatch, action, size_pct=0.0):
+    monkeypatch.setattr(
+        graph, "synthesize_decision",
+        lambda **kw: {"ticker": "GOOGL", "action": action, "size_pct": size_pct,
+                      "confidence": 0.8, "reasoning": "pm"},
+    )
+
+
+def _at_cap_buy():
+    return _state("buy", reason_code=risk_manager.REASON_MAX_POSITION_PCT)
+
+
+def test_an_at_cap_buy_is_reviewed(monkeypatch):
+    calls = _fake_review(monkeypatch)
+    _pm_decides(monkeypatch, "hold")
+    updates = graph.portfolio_manager_node(_at_cap_buy())
+    assert calls[0]["trigger"] == "at_cap_buy"
+    assert updates["position_review"]["trigger"] == "at_cap_buy"
+    assert updates["portfolio_decision"]["action"] == "hold"
+
+
+def test_a_technical_hold_is_tagged_as_such(monkeypatch):
+    calls = _fake_review(monkeypatch)
+    updates = graph.portfolio_manager_node(_state())
+    assert calls[0]["trigger"] == "technical_hold"
+    assert updates["position_review"]["trigger"] == "technical_hold"
+
+
+def test_a_buy_blocked_for_another_reason_is_not_reviewed(monkeypatch):
+    calls = _fake_review(monkeypatch)
+    _pm_decides(monkeypatch, "hold")
+    updates = graph.portfolio_manager_node(_state("buy", reason_code="max_drawdown_exceeded"))
+    assert calls == []
+    assert "position_review" not in updates
+
+
+def test_live_review_hold_does_not_cancel_an_override_buy(monkeypatch):
+    monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _fake_review(monkeypatch, action="hold")
+    _pm_decides(monkeypatch, "buy", size_pct=0.02)
+    updates = graph.portfolio_manager_node(_at_cap_buy())
+    assert updates["portfolio_decision"]["action"] == "buy"
+    assert updates["portfolio_decision"]["size_pct"] == 0.02
+
+
+def test_live_review_sell_wins_over_an_at_cap_buy(monkeypatch):
+    monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "live")
+    _fake_review(monkeypatch, action="sell")
+    _pm_decides(monkeypatch, "buy", size_pct=0.02)
+    updates = graph.portfolio_manager_node(_at_cap_buy())
+    assert updates["portfolio_decision"]["action"] == "sell"
+    assert updates["portfolio_decision"]["size_pct"] == pytest.approx(0.041604)
 
 
 def test_mode_off_skips_the_review(monkeypatch):
@@ -188,11 +244,11 @@ def _fake_llm(monkeypatch, action):
     return sent
 
 
-def _review(entry_reasoning="MACD crossover"):
+def _review(entry_reasoning="MACD crossover", trigger="technical_hold"):
     return portfolio_manager.review_position(
         ticker="GOOGL", position=_position(), sell_size_pct=0.04,
         technical_signal={"signal": "hold"}, sentiment_signal={"sentiment": "neutral"},
-        entry_reasoning=entry_reasoning, today=date(2026, 9, 29),
+        entry_reasoning=entry_reasoning, today=date(2026, 9, 29), trigger=trigger,
     )
 
 
@@ -204,6 +260,15 @@ def test_review_prompt_shows_the_position_and_why_it_was_bought(monkeypatch):
     assert "held 7 days (opened 2026-09-22)" in prompt
     assert "1.27% below its highest close since entry ($351.16)" in prompt
     assert "why it was bought: MACD crossover" in prompt
+
+
+@pytest.mark.parametrize("trigger", ["technical_hold", "at_cap_buy"])
+def test_review_prompt_says_why_the_review_is_running(monkeypatch, trigger):
+    sent = _fake_llm(monkeypatch, "hold")
+    _review(trigger=trigger)
+    assert "technical signal says hold" not in sent["messages"][0]["content"]
+    note = portfolio_manager.REVIEW_TRIGGER_NOTES[trigger]
+    assert f"Why this review: {note}" in sent["messages"][1]["content"]
 
 
 def test_missing_entry_reasoning_says_so(monkeypatch):
@@ -229,3 +294,12 @@ def test_summary_line_for_a_shadow_sell():
         [{"ticker": "GOOGL", "final_state": {"position_review": review}, "error": None}]
     )
     assert lines == ["POSITION REVIEW (shadow): GOOGL SELL (confidence 0.7) — no order placed"]
+
+
+def test_summary_line_labels_an_at_cap_buy_review():
+    review = {"mode": "shadow", "trigger": "at_cap_buy",
+              "decision": {"action": "hold", "confidence": 0.8}}
+    lines = run_daily._position_review_lines(
+        [{"ticker": "PG", "final_state": {"position_review": review}, "error": None}]
+    )
+    assert lines == ["POSITION REVIEW (shadow, at-cap buy): PG HOLD (confidence 0.8)"]
