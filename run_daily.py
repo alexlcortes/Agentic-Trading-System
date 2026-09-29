@@ -144,6 +144,24 @@ def _exit_summary_lines(exit_checks: list[dict]) -> list[str]:
     return lines
 
 
+def _position_review_lines(entries: list[dict]) -> list[str]:
+    lines = []
+    for entry in entries:
+        review = (entry.get("final_state") or {}).get("position_review")
+        if not review:
+            continue
+        label = f"POSITION REVIEW ({review['mode']}): {entry['ticker']}"
+        if review.get("error"):
+            lines.append(f"{label} ERROR — {review['error']}")
+        elif review.get("decision") is None:
+            lines.append(f"{label} skipped — {'; '.join(review['sell_check']['reasons'])}")
+        else:
+            decision = review["decision"]
+            verdict = "SELL" if decision["action"] == "sell" else "HOLD"
+            suffix = " — no order placed" if review["mode"] == "shadow" and verdict == "SELL" else ""
+            lines.append(f"{label} {verdict} (confidence {decision['confidence']}){suffix}")
+    return lines
+
 def _write_summary(
     entries: list[dict], skip_reason: str | None = None, exit_checks: list[dict] | None = None
 ) -> None:
@@ -168,6 +186,7 @@ def _write_summary(
                 f"execution={execution}"
             )
 
+    lines += _position_review_lines(entries)
     lines += _exit_summary_lines(exit_checks or [])
 
     with open(SUMMARY_LOG_PATH, "a") as f:

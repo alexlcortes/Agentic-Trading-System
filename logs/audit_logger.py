@@ -47,6 +47,20 @@ def log_decision(
         f.write(json.dumps(entry, default=str) + "\n")
 
 
+def find_final_decision(run_id: str) -> dict | None:
+    """The final_decision logged by a past run, or None if that run isn't in
+    the log. Used to show a position review why the position was bought."""
+    if not LOG_PATH.exists():
+        return None
+    with open(LOG_PATH) as f:
+        for line in f:
+            if run_id not in line:
+                continue
+            entry = json.loads(line)
+            if entry.get("run_id") == run_id and "final_decision" in entry:
+                return entry["final_decision"]
+    return None
+
 def log_reconciliation(
     order_id: str,
     original_run_id: str,

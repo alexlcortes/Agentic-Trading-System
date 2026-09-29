@@ -65,6 +65,15 @@ kill_switch: bool = _bool_env("KILL_SWITCH", False)
 # that doesn't exist.
 EXIT_REVIEW_MODE = os.getenv("EXIT_REVIEW_MODE", "shadow").strip().lower()
 
+# How the graph handles a position you already hold when the technical
+# signal is "hold" — which otherwise ends in a forced hold with no LLM call,
+# so nothing ever reconsiders the position (see
+# agents.portfolio_manager.review_position). "shadow" asks the model
+# hold-or-sell and logs its answer as agent_outputs.position_review in
+# trades.jsonl without acting on it; "live" makes that answer the run's
+# decision (still re-checked by risk_final_check); "off" skips the call.
+POSITION_REVIEW_MODE = os.getenv("POSITION_REVIEW_MODE", "shadow").strip().lower()
+
 # Human-in-the-loop override for trades the risk manager blocks solely for
 # hitting max_position_pct (see agents.human_override). Off by default so a
 # missing/unconfigured webhook never changes existing hold-on-reject

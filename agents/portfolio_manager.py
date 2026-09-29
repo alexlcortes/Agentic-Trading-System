@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from typing import Literal
 
 from openai import OpenAI
@@ -34,6 +35,38 @@ def _forced_hold(ticker: str, reasoning: str) -> dict:
         "confidence": 1.0,
         "reasoning": reasoning,
     }
+
+
+def _signal_sections(
+    technical_signal: dict, sentiment_signal: dict, fundamentals_signal: dict | None
+) -> list[str]:
+    """The signal block shared by both prompts, so a position review sees the
+    signals described exactly as the entry decision did."""
+    sections = [
+        "",
+        "Technical signal:",
+        f"- signal: {technical_signal.get('signal')}",
+        f"- confidence: {technical_signal.get('confidence')}",
+        f"- reasoning: {technical_signal.get('reasoning')}",
+        "",
+        "Sentiment signal (confidence = strength of news evidence, capped by how many "
+        "recent headlines support it; low confidence means little news, not a contrary view):",
+        f"- sentiment: {sentiment_signal.get('sentiment')}",
+        f"- confidence: {sentiment_signal.get('confidence')}",
+        f"- headlines behind it: {len(sentiment_signal.get('headlines') or [])}",
+        f"- reasoning: {sentiment_signal.get('reasoning')}",
+    ]
+
+    if fundamentals_signal is not None:
+        sections += [
+            "",
+            "Fundamentals flag (minor, advisory input only — not a primary signal):",
+            f"- unusual: {fundamentals_signal.get('unusual')}",
+            f"- flags: {fundamentals_signal.get('flags')}",
+            f"- reasoning: {fundamentals_signal.get('reasoning')}",
+        ]
+
+    return sections
 
 
 def synthesize_decision(
@@ -93,28 +126,8 @@ def synthesize_decision(
 
     prompt_sections = [
         f"Ticker: {ticker}",
-        "",
-        "Technical signal:",
-        f"- signal: {technical_signal.get('signal')}",
-        f"- confidence: {technical_signal.get('confidence')}",
-        f"- reasoning: {technical_signal.get('reasoning')}",
-        "",
-        "Sentiment signal (confidence = strength of news evidence, capped by how many "
-        "recent headlines support it; low confidence means little news, not a contrary view):",
-        f"- sentiment: {sentiment_signal.get('sentiment')}",
-        f"- confidence: {sentiment_signal.get('confidence')}",
-        f"- headlines behind it: {len(sentiment_signal.get('headlines') or [])}",
-        f"- reasoning: {sentiment_signal.get('reasoning')}",
+        *_signal_sections(technical_signal, sentiment_signal, fundamentals_signal),
     ]
-
-    if fundamentals_signal is not None:
-        prompt_sections += [
-            "",
-            "Fundamentals flag (minor, advisory input only — not a primary signal):",
-            f"- unusual: {fundamentals_signal.get('unusual')}",
-            f"- flags: {fundamentals_signal.get('flags')}",
-            f"- reasoning: {fundamentals_signal.get('reasoning')}",
-        ]
 
     if override_eligible:
         reasons_text = "; ".join(risk_check.get("reasons", [])) or "not specified"
@@ -195,3 +208,91 @@ def synthesize_decision(
         )
 
     return result
+
+
+class PositionReview(BaseModel):
+    # hold/sell only: a review can exit a position the technical signal says
+    # to leave alone, but never add to one. No size field — the exit is
+    # all-or-nothing and sized in code, so the model only makes the call.
+    action: Literal["hold", "sell"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+
+
+REVIEW_SYSTEM_PROMPT = (
+    "You are a portfolio manager reviewing a position you already hold. The "
+    "technical signal says hold; your job is to decide whether the position still "
+    "deserves its place in the portfolio. Decide as if you did not own it and were "
+    "choosing whether to buy it today at the current price. The entry price and "
+    "unrealized P&L are context, not reasons: 'it is down, wait for it to come back' "
+    "and 'it is up, lock in the gain' are not valid justifications on their own. "
+    "Compare the original reason for buying with today's signals — if that reason "
+    "no longer holds, sell; if it still holds, hold. Stop-losses and trailing stops "
+    "are handled separately by fixed rules, so do not act as one. Weigh the "
+    "technical signal as the primary driver, sentiment as a secondary input, and "
+    "fundamentals (if given) as a minor, advisory input only."
+)
+
+
+def review_position(
+    ticker: str,
+    position: dict,
+    sell_size_pct: float,
+    technical_signal: dict,
+    sentiment_signal: dict,
+    entry_reasoning: str | None,
+    fundamentals_signal: dict | None = None,
+    today: date | None = None,
+) -> dict:
+    """Ask the LLM whether to keep a held position that the technical signal
+    would otherwise leave alone (a forced hold with no LLM call). Returns a
+    decision in the same shape as synthesize_decision.
+
+    position is one entry of portfolio_state["position_details"];
+    sell_size_pct is the risk manager's approved size for selling all of it.
+    The prompt design reasoning lives in PROMPT_PATTERNS.md.
+    """
+    today = today or date.today()
+    entry_price = float(position["avg_entry_price"])
+    current_price = float(position["current_price"])
+    high_water_mark = max(float(position.get("high_water_mark") or 0.0), current_price)
+    opened_at = position.get("opened_at")
+    held = (
+        f"{(today - date.fromisoformat(opened_at)).days} days (opened {opened_at})"
+        if opened_at
+        else "unknown"
+    )
+
+    prompt_sections = [
+        f"Ticker: {ticker}",
+        *_signal_sections(technical_signal, sentiment_signal, fundamentals_signal),
+        "",
+        "Current position (you already hold this):",
+        f"- {position['qty']:g} shares, entry ${entry_price:,.2f}, now ${current_price:,.2f} "
+        f"(unrealized {float(position['unrealized_plpc']):+.2%})",
+        f"- held {held}",
+        f"- {1 - current_price / high_water_mark:.2%} below its highest close since entry "
+        f"(${high_water_mark:,.2f})",
+        f"- why it was bought: {entry_reasoning or 'not recorded'}",
+        "",
+        "Return action='sell' to exit the whole position, or action='hold' to keep it.",
+    ]
+
+    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    completion = client.chat.completions.parse(
+        model=settings.OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+            {"role": "user", "content": "\n".join(prompt_sections)},
+        ],
+        response_format=PositionReview,
+    )
+    review = completion.choices[0].message.parsed
+
+    return {
+        "ticker": ticker,
+        "action": review.action,
+        "size_pct": sell_size_pct if review.action == "sell" else 0.0,
+        "confidence": review.confidence,
+        "reasoning": review.reasoning,
+    }

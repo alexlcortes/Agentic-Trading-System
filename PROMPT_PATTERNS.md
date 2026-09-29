@@ -101,4 +101,22 @@ Going through the brief's pre-live-capital checklist item by item surfaced two r
 
 ---
 
+## 10. Giving the model more context can add bias, so say what the context is for
+
+**Where:** `agents/portfolio_manager.py` (`review_position`, `REVIEW_SYSTEM_PROMPT`), wired in `orchestration/graph.py` (`_position_review`)
+
+A held position whose technical signal was "hold" used to end in a forced hold with no model call at all. No agent saw the position — entry price, P&L, days held — so "hold" meant "the chart says do nothing today," identical to not owning it, and nothing ever asked whether the position still deserved its place. The review gives the portfolio manager that position data and a hold-or-sell choice.
+
+The obvious prompt ("here is the position, down 4%, should we sell?") invites the two biases people show with exactly this data: the *disposition effect* (holding a loser "until it comes back," selling a winner early "to lock it in") and *anchoring* on the entry price as if it were a meaningful level rather than a historical accident. The model learned from text written by people with those biases. So the system prompt reframes the question — "decide as if you did not own this and were choosing whether to buy it today at the current price" — names both bad justifications explicitly as invalid on their own, and gives the model the one piece of context that makes a real judgment possible: the logged reasoning from the run that bought it. The question becomes "is the reason we bought this still true?", which the model can actually answer, instead of "is -4% bad?", which it can't.
+
+Three structural choices back the prompt up rather than trusting it:
+
+- **The schema can only say hold or sell** (`PositionReview`). A review can exit a position against a "hold" signal but can never *add* against one — risk reduction is allowed to override the primary signal, risk addition isn't.
+- **The model makes the call; code sets the size.** Exits are all-or-nothing, sized to the whole position by the risk manager, so there's no `size_pct` for the model to get wrong (pattern #2).
+- **Price-based exits stay out of its hands.** The prompt tells it stop-losses are handled by fixed rules (`agents/exit_rules.py`), so it judges the thesis and nothing else (pattern #4).
+
+**Why it matters:** "give the model more context" is usually good advice, but context isn't neutral — P&L data carries a well-documented pull toward bad decisions, and a model will follow that pull unless the prompt says what the data is *for*. And like the exit rules, the review ships in shadow mode (`POSITION_REVIEW_MODE=shadow`) so the reframed prompt can be checked against real positions — does it actually avoid "waiting for breakeven"? — before its answer ever places an order.
+
+---
+
 *(More patterns will be added here as later phases — going live — surface new ones worth naming.)*

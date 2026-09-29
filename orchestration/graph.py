@@ -25,6 +25,7 @@ including runs that end in a hold or a rejection — not just executed
 trades.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, TypedDict
@@ -34,13 +35,15 @@ from langgraph.graph import END, START, StateGraph
 
 from agents.human_override import request_override
 from agents.market_data_agent import get_price_data
-from agents.portfolio_manager import synthesize_decision
+from agents.portfolio_manager import review_position, synthesize_decision
 from agents.risk_manager import REASON_MAX_POSITION_PCT, check_trade, shares_for
 from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
 from config.settings import RiskLimits
-from logs.audit_logger import log_decision
+from logs.audit_logger import find_final_decision, log_decision
+
+logger = logging.getLogger(__name__)
 
 
 class TradingState(TypedDict, total=False):
@@ -57,6 +60,7 @@ class TradingState(TypedDict, total=False):
     risk_check: dict  # precheck, ceiling for the portfolio manager's prompt
     portfolio_decision: dict
     risk_check_final: dict  # authoritative gate on the actual final decision
+    position_review: Optional[dict]  # held position + technical hold; see _position_review
 
     human_approved: bool
     human_gate_note: str
@@ -117,7 +121,64 @@ def portfolio_manager_node(state: TradingState) -> dict:
         risk_check=state["risk_check"],
         fundamentals_signal=state.get("fundamentals_signal"),
     )
-    return {"portfolio_decision": decision}
+    updates = {"portfolio_decision": decision}
+
+    review = _position_review(state)
+    if review is not None:
+        updates["position_review"] = review
+        if review["mode"] == "live" and review.get("decision"):
+            updates["portfolio_decision"] = review["decision"]
+    return updates
+
+
+def _position_review(state: TradingState) -> Optional[dict]:
+    """For a held position the technical signal says to hold, ask the
+    portfolio manager whether to keep it (see settings.POSITION_REVIEW_MODE).
+    Only ever proposes hold or a full exit — never a buy against a hold.
+
+    Never raises: in shadow mode a failure here must not cost the run, and in
+    live mode the fallback is the forced hold the run already has.
+    """
+    mode = settings.POSITION_REVIEW_MODE
+    ticker = state["ticker"]
+    portfolio_state = state["portfolio_state"]
+    position = (portfolio_state.get("position_details") or {}).get(ticker)
+    if mode not in ("shadow", "live") or position is None:
+        return None
+    if state["technical_signal"]["signal"] != "hold":
+        return None
+
+    try:
+        equity = float(portfolio_state["equity"])
+        existing_value = float(portfolio_state["open_positions"][ticker])
+        sell_check = check_trade(
+            {
+                "ticker": ticker,
+                "action": "sell",
+                "size_pct": existing_value / equity,
+                "price": _latest_price(state),
+            },
+            portfolio_state,
+            _limits(state),
+        )
+        if not sell_check["approved"]:
+            return {"mode": mode, "sell_check": sell_check, "decision": None}
+
+        entry_run_id = position.get("entry_run_id")
+        entry_decision = find_final_decision(entry_run_id) if entry_run_id else None
+        decision = review_position(
+            ticker=ticker,
+            position=position,
+            sell_size_pct=sell_check["adjusted_size"],
+            technical_signal=state["technical_signal"],
+            sentiment_signal=state["sentiment_signal"],
+            entry_reasoning=(entry_decision or {}).get("reasoning"),
+            fundamentals_signal=state.get("fundamentals_signal"),
+        )
+        return {"mode": mode, "sell_check": sell_check, "decision": decision}
+    except Exception as exc:
+        logger.exception("Position review failed for %s — keeping the forced hold", ticker)
+        return {"mode": mode, "error": str(exc), "decision": None}
 
 
 def risk_final_check_node(state: TradingState) -> dict:
@@ -293,6 +354,7 @@ def log_and_end_node(state: TradingState) -> dict:
         "risk_check_final": state.get("risk_check_final"),
         "human_override_result": state.get("human_override_result"),
         "human_gate_note": state.get("human_gate_note"),
+        "position_review": state.get("position_review"),
     }
 
     log_decision(
