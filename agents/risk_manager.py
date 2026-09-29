@@ -217,10 +217,16 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
             reason_code = REASON_POSITION_RESIZED
 
         if adjusted_size_pct <= 0:
+            # Not the resize message: "resized to 0.00%" misreads as a resize
+            # rather than a rejection, and the pre-check's requested size is a
+            # probe at the cap, not anything the portfolio manager asked for.
             return {
                 "approved": False,
                 "adjusted_size": 0.0,
-                "reasons": reasons or [f"{ticker} is already at or above max_position_pct — no room to add"],
+                "reasons": [
+                    f"{ticker} is already {existing_value / equity:.2%} of equity, at or above "
+                    f"max_position_pct ({limits.max_position_pct:.2%}) — no room to add"
+                ],
                 "reason_code": REASON_MAX_POSITION_PCT,
             }
 

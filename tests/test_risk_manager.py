@@ -55,6 +55,17 @@ def test_position_exactly_at_cap_is_rejected():
     assert result["reason_code"] == REASON_MAX_POSITION_PCT
 
 
+
+def test_at_cap_reason_states_the_position_not_a_resize():
+    # 2026-09-28 audit log: the pre-check (a probe at the full cap) said
+    # "requested size 5.00% ... resized to 0.00%" and the final check said
+    # "requested size 3.00% ...", which read as two conflicting requests.
+    for size in (0.05, 0.03):
+        result = check_trade(_buy(size), _state(100000.0, {"X": 5200.0}), RiskLimits())
+        assert result["reasons"] == [
+            "X is already 5.20% of equity, at or above max_position_pct (5.00%) — no room to add"
+        ]
+
 def test_real_room_under_cap_still_resizes():
     result = check_trade(_buy(), _state(100000.0, {"X": 4000.0}), RiskLimits())
     assert result["approved"] is True
