@@ -43,6 +43,12 @@ class RiskLimits:
         default_factory=lambda: [
             "AAPL", "MSFT", "SPY", "GOOGL", "JPM", "JNJ", "XOM", "AMZN",
             "PG", "CAT", "NEE", "V", "UNH", "TTWO", "NTDOY",
+            # Sectors the portfolio didn't hold (materials, real estate) or
+            # other drivers within held ones; each correlated <= 0.53 with
+            # the Sep 2026 holdings over 120 days. Kept to plain symbols
+            # (no BRK.B — yfinance wants BRK-B) and prices a 5% position
+            # can buy in whole shares with room to top up.
+            "LIN", "NEM", "PLD", "AMT", "ABBV", "ISRG", "RTX", "UNP",
         ]
     )
 
