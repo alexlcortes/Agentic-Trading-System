@@ -115,3 +115,32 @@ def test_notification_payload_shows_real_consequence(monkeypatch):
     assert sent["message"].startswith("AAPL: buy 5 sh (~$1,704, 2.00% of equity)")
     assert "cap: 5.00%" in sent["message"]
     assert sent["requested_qty"] == 5
+
+
+def test_missing_reason_does_not_name_a_channel(monkeypatch):
+    # The fallback used to say "human responded via Discord" even after the
+    # workflow moved to ntfy, which would put the wrong channel in the audit log.
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"approved": True, "responder": "ntfy"}
+
+    monkeypatch.setattr(settings, "ENABLE_HUMAN_OVERRIDE", True)
+    monkeypatch.setattr(settings, "N8N_OVERRIDE_WEBHOOK_URL", "http://n8n.test/hook")
+    monkeypatch.setattr(settings, "N8N_OVERRIDE_SECRET", "secret")
+    monkeypatch.setattr(human_override.httpx, "post", lambda *a, **kw: FakeResponse())
+    monkeypatch.setattr(human_override, "log_human_override", lambda **kw: None)
+
+    result = human_override.request_override(
+        run_id="test", ticker="AAPL", requested_size_pct=0.02, requested_qty=5,
+        requested_notional=1704.40, equity=100_000.0, existing_pct=0.05,
+        max_position_pct=0.05, reasoning="test",
+    )
+
+    assert result == {
+        "approved": True,
+        "responder": "ntfy",
+        "reason": "no reason provided by override workflow",
+    }

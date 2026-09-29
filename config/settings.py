@@ -73,7 +73,7 @@ ENABLE_HUMAN_OVERRIDE = _bool_env("ENABLE_HUMAN_OVERRIDE", False)
 N8N_OVERRIDE_WEBHOOK_URL = os.getenv("N8N_OVERRIDE_WEBHOOK_URL")
 N8N_OVERRIDE_SECRET = os.getenv("N8N_OVERRIDE_SECRET")
 # How long n8n's Wait node is configured to hold the request open for your
-# Discord reply. The HTTP client timeout adds a buffer on top of this so it
+# ntfy approve/decline tap. The HTTP client timeout adds a buffer on top of this so it
 # never cuts the connection before n8n's own timeout fires.
 OVERRIDE_TIMEOUT_SECONDS = int(os.getenv("OVERRIDE_TIMEOUT_SECONDS", "600"))
 OVERRIDE_HTTP_TIMEOUT_BUFFER_SECONDS = 30

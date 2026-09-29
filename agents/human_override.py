@@ -9,8 +9,8 @@ switch, daily loss halt, max_open_positions, sells) is a hard stop and is
 never routed here — see the reason_code docstring in agents/risk_manager.py.
 
 The actual "ask a human and wait" step lives in an external n8n workflow
-(Webhook -> Discord message -> Wait-for-reply-or-timeout -> Respond to
-Webhook), not in this process. This function makes ONE blocking HTTP POST
+(Webhook -> ntfy push notification -> Wait-for-tap-or-timeout -> Respond to
+Webhook; see HUMAN_OVERRIDE_SETUP.md), not in this process. This function makes ONE blocking HTTP POST
 and treats anything other than a clean, well-formed "approved: true" as a
 decline — a network error, a timeout, or a malformed response must never be
 interpreted as approval, since that would silently defeat the position cap
@@ -111,7 +111,9 @@ def request_override(
             result = {
                 "approved": bool(body["approved"]),
                 "responder": body.get("responder"),
-                "reason": body.get("reason", "human responded via Discord"),
+                # Channel-agnostic on purpose: this process can't know how the
+                # human was reached — "responder" is where the workflow says so.
+                "reason": body.get("reason", "no reason provided by override workflow"),
             }
     except httpx.TimeoutException:
         result = {
