@@ -46,9 +46,12 @@ RiskLimits' paper-tested default.
 
 import logging
 import sys
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+
+import requests
 
 from config import settings
 from config.settings import RiskLimits
@@ -84,6 +87,42 @@ CATCHUP_CUTOFF_HOUR = 16
 
 def _woke_up_too_late() -> bool:
     return datetime.now().hour < CATCHUP_CUTOFF_HOUR
+
+
+# How long to wait for the network before giving up on today's run. A laptop
+# on a dead or captive-portal network (e.g. while traveling) fails DNS for
+# every API, and without this the run crashed on its first Alpaca call and
+# the day was lost. ~20 minutes covers a flaky connection or a machine that
+# woke before Wi-Fi rejoined, and keeps the run well before midnight.
+NETWORK_RETRY_ATTEMPTS = 10
+NETWORK_RETRY_DELAY_SECONDS = 120
+
+
+class NetworkUnavailableError(RuntimeError):
+    pass
+
+
+def _wait_for_network() -> None:
+    """Block until Alpaca is reachable, retrying only on connection-level
+    failures (DNS, refused, timeout). An API error such as bad credentials
+    is not a network problem and is raised immediately — retrying it would
+    just delay the same failure."""
+    for attempt in range(1, NETWORK_RETRY_ATTEMPTS + 1):
+        try:
+            _get_client().get_clock()
+            if attempt > 1:
+                logger.info("Network is back after %d attempts — continuing the run.", attempt)
+            return
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            if attempt == NETWORK_RETRY_ATTEMPTS:
+                raise NetworkUnavailableError(
+                    f"Alpaca unreachable after {attempt} attempts: {exc}"
+                ) from exc
+            logger.warning(
+                "Alpaca unreachable (attempt %d/%d), retrying in %ds: %s",
+                attempt, NETWORK_RETRY_ATTEMPTS, NETWORK_RETRY_DELAY_SECONDS, exc,
+            )
+            time.sleep(NETWORK_RETRY_DELAY_SECONDS)
 
 
 def _startup_safety_check() -> bool:
@@ -290,6 +329,13 @@ def run_once() -> list[dict]:
             settings.auto_execute,
         )
 
+    try:
+        _wait_for_network()
+    except NetworkUnavailableError as exc:
+        logger.error("%s — skipping today's run.", exc)
+        _write_summary([], skip_reason=f"Network unreachable — skipped today's run. {exc}")
+        raise
+
     # Confirm what any order queued by a prior run (submitted after close,
     # see execution/alpaca_executor.py) actually did — checked every run,
     # regardless of today's market state, since it's resolving a past run's
@@ -344,6 +390,9 @@ def run_once() -> list[dict]:
 
 
 if __name__ == "__main__":
-    outcomes = run_once()
+    try:
+        outcomes = run_once()
+    except NetworkUnavailableError:
+        sys.exit(1)
     if any(entry["error"] for entry in outcomes):
         sys.exit(1)
