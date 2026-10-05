@@ -276,7 +276,7 @@ OVERRIDE_TIMEOUT_SECONDS=600
 Use `localhost` here, not the LAN IP. `run_daily.py` and n8n run on the
 same Mac and n8n listens on every interface, so this works regardless of
 what IP the router hands out. Only the phone-facing resume URLs need the
-LAN IP, and `scripts/start_n8n.sh` recomputes that on every start. A
+LAN IP, and `scripts/run_daily_with_n8n.sh` recomputes that on every run. A
 hardcoded LAN IP here silently breaks the override when DHCP reassigns
 the Mac's address — the POST just fails to connect and every blocked
 trade is auto-declined (this happened on 2026-09-25, .168 -> .226).
