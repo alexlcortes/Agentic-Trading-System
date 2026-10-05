@@ -1,0 +1,16 @@
+# Mon-Fri 16:30 US Eastern, matching the launchd job. Enable with:
+#   sudo systemctl enable --now agentic-trading-daily@<user>.timer
+
+[Unit]
+Description=Schedule the agentic trading system daily run (%i)
+
+[Timer]
+OnCalendar=Mon..Fri 16:30 America/New_York
+AccuracySec=1min
+# Like launchd: if the Pi was off or rebooting at 16:30, run once when it
+# comes back. run_daily.py's CATCHUP_CUTOFF_HOUR still refuses a catch-up
+# that would land before 16:00 (i.e. the next morning).
+Persistent=true
+
+[Install]
+WantedBy=timers.target

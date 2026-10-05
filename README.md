@@ -28,6 +28,30 @@ launchctl bootout gui/$(id -u)/com.agentictradingsystem.daily
 rm ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
 ```
 
+### Raspberry Pi (systemd)
+
+On Linux the same schedule is a systemd timer, in `scripts/systemd/`. The
+units are templated on the username and expect the repo at
+`/home/<user>/agentic-trading-system`. One-time setup on the Pi: install
+`uv`, run `uv sync`, copy `.env` over, and (for the human override) install
+n8n and copy `~/.n8n` from the Mac.
+
+```
+sudo cp scripts/systemd/agentic-trading-daily@.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now agentic-trading-daily@$USER.timer
+```
+
+Check it's scheduled with `systemctl list-timers 'agentic-trading-daily*'`.
+Run once by hand (safe after close) with
+`sudo systemctl start agentic-trading-daily@$USER.service`. Remove with
+`sudo systemctl disable --now agentic-trading-daily@$USER.timer`.
+
+The service sets `TZ=America/New_York` itself, so the 16:30 schedule and
+`CATCHUP_CUTOFF_HOUR` follow market time whatever the Pi's timezone is.
+Systemd-level failures go to `journalctl -u agentic-trading-daily@$USER`
+(the Linux equivalent of `logs/launchd.log`).
+
 ### Logs
 
 - `logs/cron.log` — stdout/stderr of each run (the script's own output)

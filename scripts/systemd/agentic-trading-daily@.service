@@ -1,0 +1,42 @@
+# Linux (e.g. Raspberry Pi) equivalent of
+# scripts/launchd/com.agentictradingsystem.daily.plist. Templated on the
+# username, so the same file works for any account:
+#   agentic-trading-daily@<user>.service  ->  runs as <user> from
+#   /home/<user>/agentic-trading-system
+# Started by agentic-trading-daily@<user>.timer — see README "Raspberry Pi".
+
+[Unit]
+Description=Agentic trading system daily run (%i)
+# Hold the start until the network is configured. run_daily.py also retries
+# Alpaca for ~20 min itself, which covers a network that is "up" but not
+# actually reaching the internet yet.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+WorkingDirectory=/home/%i/agentic-trading-system
+ExecStart=/home/%i/agentic-trading-system/scripts/run_daily_with_n8n.sh
+
+# systemd doesn't load a login profile, so give the wrapper a PATH that
+# finds uv (installer puts it in ~/.local/bin) and n8n (npm global install).
+Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+# The schedule, CATCHUP_CUTOFF_HOUR and "after close" all assume US market
+# time — pin it here so they hold even if the Pi's own timezone is UTC.
+Environment=TZ=America/New_York
+# n8n is slow to boot on a Pi.
+Environment=N8N_STARTUP_TIMEOUT=180
+
+# oneshot services time out after 90s by default. A run is a few minutes,
+# plus up to ~20 min of network retries and 10 min per human-override wait.
+TimeoutStartSec=2h
+
+# Same log file launchd writes to, so logs/ reads the same on both machines.
+StandardOutput=append:/home/%i/agentic-trading-system/logs/cron.log
+StandardError=append:/home/%i/agentic-trading-system/logs/cron.log
+
+# Deliberately no Restart=on-failure: run_daily.py exits 1 when any single
+# ticker errored, after the others may already have placed orders. Rerunning
+# the whole watchlist could submit those orders a second time. Network
+# outages are retried inside run_daily.py instead, before anything trades.
