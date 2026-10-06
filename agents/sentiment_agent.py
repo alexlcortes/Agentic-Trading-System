@@ -206,7 +206,11 @@ def get_news_sentiment(ticker: str) -> dict:
             "confidence_raw": 0.0,
         }
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[

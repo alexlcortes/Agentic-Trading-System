@@ -65,7 +65,11 @@ def get_fundamentals(ticker: str) -> dict:
             ),
         ).model_dump()
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[

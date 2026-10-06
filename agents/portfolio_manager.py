@@ -165,7 +165,11 @@ def synthesize_decision(
         else "Your size_pct must never exceed the hard ceiling stated in the prompt."
     )
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[
@@ -309,7 +313,11 @@ def review_position(
         "to exit the whole position or action='hold' to keep it.",
     ]
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[
@@ -404,7 +412,11 @@ def propose_rotation(candidates: list[dict], holdings: list[dict], today: date |
     ]
 
     schema = _rotation_schema([c["ticker"] for c in candidates], [h["ticker"] for h in holdings])
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
     completion = client.chat.completions.parse(
         model=settings.OPENAI_MODEL,
         messages=[

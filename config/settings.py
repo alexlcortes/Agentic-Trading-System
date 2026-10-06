@@ -7,6 +7,13 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+# Every agent's OpenAI client uses these. Calls normally return in 2-4s; without
+# an explicit timeout a stalled response hung the whole daily run for hours
+# (2026-10-06). A timed-out call raises, and run_daily logs that ticker as failed
+# and moves on. The timeout applies to each connect/read, so it is not a hard
+# limit on the call's total time.
+OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
+OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
