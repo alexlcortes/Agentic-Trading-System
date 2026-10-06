@@ -93,4 +93,43 @@ until [ -z "$N8N_PID" ] || curl -sf "http://localhost:${N8N_PORT}/healthz" >/dev
     fi
 done
 
-"$UV" run python run_daily.py
+# Hard cap on how long run_daily.py may run. A stalled OpenAI call held the
+# 2026-10-06 run for ~2.5h, and launchd has no timeout of its own. macOS has
+# no `timeout` command, so a watchdog checks the wall clock rather than
+# counting down with sleep, which keeps time the Mac spends asleep counting
+# toward the cap. The default sits under the systemd unit's TimeoutStartSec=2h,
+# so on the Pi this fires first and logs why.
+RUN_TIMEOUT_SECONDS="${RUN_TIMEOUT_SECONDS:-6600}"
+WATCHDOG_POLL_SECONDS=30
+
+"$UV" run python run_daily.py &
+RUN_PID=$!
+deadline=$(( $(date +%s) + RUN_TIMEOUT_SECONDS ))
+(
+    while kill -0 "$RUN_PID" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "[run_daily_with_n8n] run_daily.py still running after ${RUN_TIMEOUT_SECONDS}s — stopping it"
+            # uv runs python as a child, so stop both.
+            pkill -TERM -P "$RUN_PID" 2>/dev/null
+            kill -TERM "$RUN_PID" 2>/dev/null
+            sleep 30
+            pkill -KILL -P "$RUN_PID" 2>/dev/null
+            kill -KILL "$RUN_PID" 2>/dev/null
+            exit
+        fi
+        sleep "$WATCHDOG_POLL_SECONDS"
+    done
+) &
+WATCHDOG_PID=$!
+
+wait "$RUN_PID"
+status=$?
+# Reaping the watchdog here keeps bash's "Terminated" job notice out of cron.log.
+{ kill "$WATCHDOG_PID"; wait "$WATCHDOG_PID"; } 2>/dev/null
+# A killed run can still exit 0 (it depends on how uv reports its child's
+# signal), so report a run past the deadline as failed, with the same code
+# timeout(1) uses.
+if [ "$(date +%s)" -ge "$deadline" ]; then
+    status=124
+fi
+exit "$status"

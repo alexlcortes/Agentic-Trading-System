@@ -31,9 +31,10 @@ Environment=N8N_STARTUP_TIMEOUT=180
 # oneshot services time out after 90s by default. A run is a few minutes,
 # plus up to ~20 min of network retries and 10 min per human-override wait.
 # This is also the run's hard wall-clock cap: past 2h systemd kills the whole
-# process group (n8n included) and logs a failure to the journal. That backstops
-# a stalled API call, like the OpenAI request that held the 2026-10-06 run for
-# ~2.5h. RuntimeMaxSec= would do nothing here, because it doesn't apply to
+# process group (n8n included) and logs a failure to the journal. The wrapper's
+# own RUN_TIMEOUT_SECONDS (110 min) normally stops a stalled run first, like
+# the OpenAI request that held the 2026-10-06 run for ~2.5h; this backstops the
+# wrapper. RuntimeMaxSec= would do nothing here, because it doesn't apply to
 # oneshot services.
 TimeoutStartSec=2h
 
