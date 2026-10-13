@@ -1,4 +1,6 @@
+import logging
 import re
+import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Literal
@@ -6,9 +8,15 @@ from urllib.parse import urlparse
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
+import requests
 from tavily import TavilyClient
+from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+TAVILY_BACKOFF_SECONDS = 2.0
 
 MAX_HEADLINES = 8
 # Ask Tavily for more than we keep: on 2026-09-24, 7 of SPY's 8 results were
@@ -158,9 +166,40 @@ def _build_user_message(ticker: str, headlines: list[dict], now: datetime) -> st
     )
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Timeouts, dropped connections and 5xx responses. Tavily's own errors
+    for a bad key, a bad request or a used-up quota (429) are real answers
+    that a retry would only repeat."""
+    if isinstance(exc, (TavilyTimeoutError, requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    response = getattr(exc, "response", None)
+    return (
+        isinstance(exc, requests.exceptions.HTTPError)
+        and response is not None
+        and response.status_code >= 500
+    )
+
+
+def _search_with_retry(client: TavilyClient, **search_kwargs) -> dict:
+    attempts = settings.TAVILY_MAX_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.search(timeout=settings.TAVILY_TIMEOUT_SECONDS, **search_kwargs)
+        except Exception as exc:
+            if not _is_transient(exc) or attempt == attempts:
+                raise
+            backoff = TAVILY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            logger.warning(
+                "Tavily search failed (attempt %d/%d), retrying in %.0fs: %r",
+                attempt, attempts, backoff, exc,
+            )
+            time.sleep(backoff)
+
+
 def _fetch_headlines(ticker: str, now: datetime) -> tuple[list[dict], dict]:
     client = TavilyClient(api_key=settings.TAVILY_API_KEY)
-    response = client.search(
+    response = _search_with_retry(
+        client,
         query=f"{ticker} stock news",
         topic="news",
         days=MAX_HEADLINE_AGE_DAYS,

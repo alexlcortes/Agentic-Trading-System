@@ -2,6 +2,9 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+import requests
+from tavily.errors import InvalidAPIKeyError, UsageLimitExceededError
+from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from agents import sentiment_agent
 from agents.sentiment_agent import (
@@ -13,6 +16,7 @@ from agents.sentiment_agent import (
     _filter_results,
     get_news_sentiment,
 )
+from config import settings
 
 NOW = datetime(2026, 9, 24, 20, 30, tzinfo=timezone.utc)
 
@@ -164,3 +168,70 @@ def test_no_headlines_skips_the_llm(monkeypatch):
     result = get_news_sentiment("V")
     assert result["confidence"] == 0.0
     assert result["confidence_cap"] == 0.0
+
+
+class _FlakyTavily:
+    """search() raises each queued exception in turn, then returns no results."""
+
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.timeouts = []
+
+    def search(self, timeout, **kwargs):
+        self.timeouts.append(timeout)
+        if self.failures:
+            raise self.failures.pop(0)
+        return {"results": []}
+
+
+def _http_error(status):
+    return requests.exceptions.HTTPError(response=SimpleNamespace(status_code=status))
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(sentiment_agent.time, "sleep", sleeps.append)
+    return sleeps
+
+
+@pytest.mark.parametrize("failure", [
+    # SPY 2026-10-07: the client turns requests' ReadTimeout into its own TimeoutError.
+    TavilyTimeoutError(60),
+    requests.exceptions.ConnectionError("Remote end closed connection without response"),
+    _http_error(502),
+])
+def test_transient_tavily_failure_is_retried(no_sleep, failure):
+    client = _FlakyTavily([failure])
+    assert sentiment_agent._search_with_retry(client, query="SPY stock news") == {"results": []}
+    assert len(client.timeouts) == 2
+    assert no_sleep == [sentiment_agent.TAVILY_BACKOFF_SECONDS]
+
+
+@pytest.mark.parametrize("failure", [
+    UsageLimitExceededError("quota used up"),
+    InvalidAPIKeyError("bad key"),
+    _http_error(404),
+])
+def test_permanent_tavily_failure_is_not_retried(no_sleep, failure):
+    client = _FlakyTavily([failure])
+    with pytest.raises(type(failure)):
+        sentiment_agent._search_with_retry(client, query="SPY stock news")
+    assert len(client.timeouts) == 1
+    assert no_sleep == []
+
+
+def test_tavily_gives_up_after_its_retries(no_sleep, monkeypatch):
+    monkeypatch.setattr(settings, "TAVILY_MAX_RETRIES", 2)
+    client = _FlakyTavily([TavilyTimeoutError(20)] * 3)
+    with pytest.raises(TavilyTimeoutError):
+        sentiment_agent._search_with_retry(client, query="SPY stock news")
+    assert len(client.timeouts) == 3
+    assert len(no_sleep) == 2  # no pointless sleep after the last attempt
+
+
+def test_each_tavily_attempt_uses_the_configured_timeout(no_sleep, monkeypatch):
+    monkeypatch.setattr(settings, "TAVILY_TIMEOUT_SECONDS", 20.0)
+    client = _FlakyTavily([TavilyTimeoutError(20)])
+    sentiment_agent._search_with_retry(client, query="SPY stock news")
+    assert client.timeouts == [20.0, 20.0]

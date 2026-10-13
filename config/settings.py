@@ -15,6 +15,13 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
 OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 
+# Tavily's client waits 60s and never retries; a read timeout failed SPY and
+# UNP on 2026-10-07 and ISRG on 10-08. A healthy search answers in seconds,
+# so a shorter wait plus retries recovers from a stall sooner than one long
+# wait. Same meaning as the OpenAI pair: MAX_RETRIES is attempts after the first.
+TAVILY_TIMEOUT_SECONDS = float(os.getenv("TAVILY_TIMEOUT_SECONDS", "20"))
+TAVILY_MAX_RETRIES = int(os.getenv("TAVILY_MAX_RETRIES", "2"))
+
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
