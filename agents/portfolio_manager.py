@@ -11,6 +11,10 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# risk_manager rounds adjusted_size to 6 decimals, so anything closer to the
+# ceiling than this is float noise, not the model ignoring the constraint.
+CEILING_TOLERANCE = 1e-6
+
 
 class PortfolioDecision(BaseModel):
     ticker: str
@@ -145,7 +149,7 @@ def synthesize_decision(
     else:
         prompt_sections += [
             "",
-            f"Risk manager constraint: the MAXIMUM size_pct you may return is {ceiling:.4f} "
+            f"Risk manager constraint: the MAXIMUM size_pct you may return is {ceiling:.6f} "
             f"({ceiling:.2%} of account equity). This is a hard ceiling, not a suggestion — "
             "you must never return a size_pct above this value. If you believe a smaller size "
             "is more appropriate given the signals above, return that smaller size instead.",
@@ -197,20 +201,21 @@ def synthesize_decision(
         # if it's still rejected for the same reason, a human's approval.
         pass
     elif result["size_pct"] > ceiling:
-        logger.warning(
-            "Portfolio manager LLM returned size_pct=%.4f exceeding ceiling=%.4f for %s "
-            "— clamping. This is worth tracking: it means the model is not reliably "
-            "obeying the stated constraint.",
-            result["size_pct"],
-            ceiling,
-            ticker,
-        )
         original_size = result["size_pct"]
         result["size_pct"] = ceiling
-        result["reasoning"] += (
-            f" [NOTE: model requested size_pct={original_size:.4f}, exceeding the risk "
-            f"manager's ceiling of {ceiling:.4f}; clamped down to the ceiling.]"
-        )
+        if original_size - ceiling > CEILING_TOLERANCE:
+            logger.warning(
+                "Portfolio manager LLM returned size_pct=%.6f exceeding ceiling=%.6f for %s "
+                "— clamping. This is worth tracking: it means the model is not reliably "
+                "obeying the stated constraint.",
+                original_size,
+                ceiling,
+                ticker,
+            )
+            result["reasoning"] += (
+                f" [NOTE: model requested size_pct={original_size:.6f}, exceeding the risk "
+                f"manager's ceiling of {ceiling:.6f}; clamped down to the ceiling.]"
+            )
 
     return result
 
