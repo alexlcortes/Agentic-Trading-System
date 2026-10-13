@@ -1,8 +1,11 @@
-"""Retries for Alpaca and yfinance calls.
+"""Retries for Alpaca and yfinance calls, and cleanup of yfinance price data.
 
 Regression for 2026-10-08 and 10-09: a GOOGL buy reached Alpaca, then the
 status check that follows it hit RemoteDisconnected. The exception discarded
 the order id, so both orders (8 and 1 shares) filled without being tracked.
+
+yfinance: an empty result for LIN on 2026-10-08 was taken as a delisted
+ticker, and a last row with no close on 2026-09-30 turned SPY's SMAs to NaN.
 """
 
 import json
