@@ -56,6 +56,7 @@ Design notes (read before changing this file):
       a hard stop.
 """
 
+import math
 from pathlib import Path
 
 from config import settings
@@ -107,8 +108,10 @@ def _validate_proposed_trade(proposed_trade: dict) -> None:
     if float(proposed_trade.get("size_pct", 0.0)) < 0:
         raise ValueError("proposed_trade['size_pct'] must not be negative")
     price = proposed_trade.get("price")
-    if price is not None and float(price) <= 0:
-        raise ValueError("proposed_trade['price'] must be positive when given")
+    # isfinite: NaN fails every comparison, so "<= 0" alone lets it through
+    # to shares_for, which crashed on it (2026-09-30, a NaN yfinance close).
+    if price is not None and not (math.isfinite(float(price)) and float(price) > 0):
+        raise ValueError(f"proposed_trade['price'] must be a positive number when given, got {price!r}")
 
 
 def _below_one_share(ticker: str, size_pct: float, equity: float, price: float) -> dict:

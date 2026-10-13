@@ -130,3 +130,9 @@ def test_no_price_skips_the_share_check():
 def test_non_positive_price_is_invalid():
     with pytest.raises(ValueError):
         check_trade(_buy(price=0.0), _state(100000.0), RiskLimits())
+
+
+def test_rejects_a_nan_price():
+    # 2026-09-30: a NaN close got past the "<= 0" check and crashed shares_for.
+    with pytest.raises(ValueError, match="positive number"):
+        check_trade(_buy(price=float("nan")), _state(100000.0), RiskLimits())

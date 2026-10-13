@@ -16,6 +16,23 @@ class TickerDataError(Exception):
     """Raised when price data for a ticker cannot be retrieved."""
 
 
+def _drop_missing_closes(ticker: str, data: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows with no close. yfinance sometimes ends the frame with one
+    (2026-09-30: SPY, GOOGL, XOM). Left in, it made the SMAs NaN — which the
+    crossover check read as "below" — and crashed the risk check's share
+    math. A row with no close is not a bar, so the last real close is the
+    latest price."""
+    if data.empty or "Close" not in data:
+        return data
+    missing = data["Close"].isna()
+    if missing.any():
+        logger.warning(
+            "Dropping %d row(s) with no close for %s: %s",
+            missing.sum(), ticker, [str(d.date()) for d in data.index[missing]],
+        )
+    return data[~missing]
+
+
 def _fetch_with_retry(ticker: str, fetch_fn: Callable[[], pd.DataFrame]) -> pd.DataFrame:
     last_error: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -27,6 +44,7 @@ def _fetch_with_retry(ticker: str, fetch_fn: Callable[[], pd.DataFrame]) -> pd.D
                 "Attempt %d/%d failed fetching %s: %s", attempt, MAX_RETRIES, ticker, exc
             )
         else:
+            data = _drop_missing_closes(ticker, data)
             if not data.empty:
                 return data[["Open", "High", "Low", "Close", "Volume"]]
             # yfinance often swallows a transient failure and returns an empty

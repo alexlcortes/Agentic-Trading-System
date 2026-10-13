@@ -195,3 +195,27 @@ def test_empty_yfinance_result_is_retried(isolated):
 def test_persistently_empty_yfinance_result_is_reported_as_no_data():
     with pytest.raises(TickerDataError, match="No price data returned for 'XXXX'"):
         market_data_agent._fetch_with_retry("XXXX", pd.DataFrame)
+
+
+def test_rows_without_a_close_are_dropped(isolated):
+    # 2026-09-30: yfinance ended SPY/GOOGL/XOM with a NaN close.
+    index = pd.to_datetime(["2026-09-29", "2026-09-30"])
+    frame = pd.DataFrame(
+        {"Open": [1.0, None], "High": [1.0, None], "Low": [1.0, None],
+         "Close": [670.0, None], "Volume": [1, None]},
+        index=index,
+    )
+    data = market_data_agent._fetch_with_retry("SPY", lambda: frame)
+    assert list(data["Close"]) == [670.0]
+    assert isolated == []  # not an empty result, so no retry
+
+
+def test_frame_with_only_missing_closes_is_retried_as_empty(isolated):
+    nan_frame = pd.DataFrame(
+        {"Open": [None], "High": [None], "Low": [None], "Close": [None], "Volume": [None]},
+        index=pd.to_datetime(["2026-09-30"]),
+    )
+    responses = iter([nan_frame, _ohlcv()])
+    data = market_data_agent._fetch_with_retry("SPY", lambda: next(responses))
+    assert len(data) == 1
+    assert len(isolated) == 1
