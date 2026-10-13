@@ -1,9 +1,11 @@
 import logging
+import time
 
 import yfinance as yf
 from openai import OpenAI
 from pydantic import BaseModel
 
+from agents.market_data_agent import BASE_BACKOFF_SECONDS, MAX_RETRIES
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -33,12 +35,19 @@ class FundamentalsFlag(BaseModel):
 
 
 def _fetch_metrics(ticker: str) -> dict:
-    try:
-        info = yf.Ticker(ticker).info
-    except Exception as exc:
-        logger.warning("Failed to fetch fundamentals info for %s: %s", ticker, exc)
-        return {}
-    return {key: info.get(key) for key in METRIC_KEYS}
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            info = yf.Ticker(ticker).info
+        except Exception as exc:
+            logger.warning(
+                "Attempt %d/%d failed fetching fundamentals info for %s: %s",
+                attempt, MAX_RETRIES, ticker, exc,
+            )
+            if attempt < MAX_RETRIES:
+                time.sleep(BASE_BACKOFF_SECONDS * (2 ** (attempt - 1)))
+            continue
+        return {key: info.get(key) for key in METRIC_KEYS}
+    return {}
 
 
 def get_fundamentals(ticker: str) -> dict:

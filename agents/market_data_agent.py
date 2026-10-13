@@ -27,17 +27,25 @@ def _fetch_with_retry(ticker: str, fetch_fn: Callable[[], pd.DataFrame]) -> pd.D
                 "Attempt %d/%d failed fetching %s: %s", attempt, MAX_RETRIES, ticker, exc
             )
         else:
-            if data.empty:
-                raise TickerDataError(
-                    f"No price data returned for '{ticker}' — likely invalid or delisted ticker, "
-                    "or no trading days in the requested range"
-                )
-            return data[["Open", "High", "Low", "Close", "Volume"]]
+            if not data.empty:
+                return data[["Open", "High", "Low", "Close", "Volume"]]
+            # yfinance often swallows a transient failure and returns an empty
+            # frame ("possibly delisted") — LIN on 2026-10-08 — so an empty
+            # result is retried too, and only called invalid if it persists.
+            last_error = None
+            logger.warning(
+                "Attempt %d/%d returned no data for %s", attempt, MAX_RETRIES, ticker
+            )
 
         if attempt < MAX_RETRIES:
             backoff = BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
             time.sleep(backoff)
 
+    if last_error is None:
+        raise TickerDataError(
+            f"No price data returned for '{ticker}' after {MAX_RETRIES} attempts — likely "
+            "invalid or delisted ticker, or no trading days in the requested range"
+        )
     raise TickerDataError(
         f"Failed to fetch price data for '{ticker}' after {MAX_RETRIES} attempts"
     ) from last_error

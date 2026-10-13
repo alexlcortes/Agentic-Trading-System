@@ -1,9 +1,12 @@
 import json
 import logging
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 
+import requests
+from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide, OrderStatus, TimeInForce
 from alpaca.trading.requests import MarketOrderRequest
@@ -15,6 +18,14 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1.0
 POLL_TIMEOUT_SECONDS = 30.0
+
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2.0
+
+# Connection-level failures only (DNS, dropped connection, timeout), the same
+# set run_daily._wait_for_network retries. alpaca-py already retries 429 and
+# 504 responses itself; any other API error is a real answer, not a blip.
+TRANSIENT_ERRORS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 
 # run_daily.py is scheduled after market close by design (Phase 8/9: decide
 # off the completed daily bar, not an in-progress one), so a DAY order
@@ -52,6 +63,76 @@ def _get_client() -> TradingClient:
     )
 
 
+def with_retry(what: str, fn):
+    """Call fn(), retrying connection-level failures with exponential backoff.
+    Only for calls that are safe to repeat (reads) — order submission goes
+    through _submit_without_duplicates instead."""
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return fn()
+        except TRANSIENT_ERRORS as exc:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            backoff = RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            logger.warning(
+                "Alpaca %s failed (attempt %d/%d), retrying in %.0fs: %s",
+                what, attempt, RETRY_ATTEMPTS, backoff, exc,
+            )
+            time.sleep(backoff)
+
+
+def _find_by_client_id(client: TradingClient, client_order_id: str):
+    """The order Alpaca has under client_order_id, or None if it has none."""
+    try:
+        return with_retry("order lookup", lambda: client.get_order_by_client_id(client_order_id))
+    except APIError as exc:
+        if exc.status_code == 404:
+            return None
+        raise
+
+
+def _submit_without_duplicates(client: TradingClient, order_request: MarketOrderRequest):
+    """Submit an order, retrying connection failures without ever placing it twice.
+
+    A dropped connection doesn't say whether Alpaca received the order, so a
+    blind resubmit could buy twice. order_request carries a client_order_id;
+    after a failure this looks that id up and only resubmits if Alpaca has no
+    such order. Alpaca also refuses a reused client_order_id, which is the
+    backstop if a resubmit races the original.
+    """
+    client_order_id = order_request.client_order_id
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return client.submit_order(order_data=order_request)
+        except TRANSIENT_ERRORS as exc:
+            last_error = exc
+            backoff = RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            logger.warning(
+                "Order submission for %s failed (attempt %d/%d), checking whether "
+                "Alpaca received it in %.0fs: %s",
+                order_request.symbol, attempt, RETRY_ATTEMPTS, backoff, exc,
+            )
+        except APIError:
+            if attempt == 1:
+                raise
+            # Most likely the duplicate-id refusal: an earlier attempt landed.
+            order = _find_by_client_id(client, client_order_id)
+            if order is None:
+                raise
+            return order
+
+        time.sleep(backoff)
+        order = _find_by_client_id(client, client_order_id)
+        if order is not None:
+            logger.info(
+                "Order %s for %s reached Alpaca despite the failed response — not resubmitting.",
+                order.id, order_request.symbol,
+            )
+            return order
+
+    raise last_error
+
+
 def get_portfolio_state() -> dict:
     """Fetch real account state from Alpaca, shaped to match check_trade's
     portfolio_state contract: {"equity", "open_positions", "daily_realized_pnl"}.
@@ -65,8 +146,8 @@ def get_portfolio_state() -> dict:
     just one down on closed trades.
     """
     client = _get_client()
-    account = client.get_account()
-    positions = client.get_all_positions()
+    account = with_retry("account fetch", client.get_account)
+    positions = with_retry("positions fetch", client.get_all_positions)
 
     equity = float(account.equity)
     last_equity = float(account.last_equity)
@@ -153,7 +234,7 @@ def reconcile_pending_orders() -> list[dict]:
 
     for order_id, info in pending.items():
         try:
-            order = client.get_order_by_id(order_id)
+            order = with_retry("order lookup", lambda: client.get_order_by_id(order_id))
         except Exception as exc:
             logger.error("Failed to look up pending order %s (%s): %s", order_id, info["ticker"], exc)
             still_pending[order_id] = info
@@ -214,18 +295,22 @@ def submit_order(
         raise ValueError(f"qty must be positive, got {qty!r}")
 
     client = _get_client()
-    market_was_open = client.get_clock().is_open
+    market_was_open = with_retry("clock check", client.get_clock).is_open
     order_request = MarketOrderRequest(
         symbol=ticker,
         qty=qty,
         side=OrderSide.BUY if side == "buy" else OrderSide.SELL,
         time_in_force=TimeInForce.DAY,
+        client_order_id=str(uuid.uuid4()),
     )
 
     try:
-        order = client.submit_order(order_data=order_request)
+        order = _submit_without_duplicates(client, order_request)
     except Exception as exc:
-        logger.error("Order submission failed for %s %s %s: %s", side, qty, ticker, exc)
+        logger.error(
+            "Order submission failed for %s %s %s (client_order_id %s): %s",
+            side, qty, ticker, order_request.client_order_id, exc,
+        )
         return {
             "order_id": None,
             "status": "submission_failed",
@@ -237,14 +322,31 @@ def submit_order(
             "error": str(exc),
         }
 
+    # From here on the order exists at Alpaca, so nothing below may raise: an
+    # exception would discard order_id and the order would never be tracked
+    # (2026-10-08 and 10-09: GOOGL buys filled but were logged as errors).
     order_id = order.id
     elapsed = 0.0
+    poll_error = None
     while order.status not in TERMINAL_STATUSES and elapsed < POLL_TIMEOUT_SECONDS:
         time.sleep(POLL_INTERVAL_SECONDS)
         elapsed += POLL_INTERVAL_SECONDS
-        order = client.get_order_by_id(order_id)
+        try:
+            order = with_retry("order status check", lambda: client.get_order_by_id(order_id))
+        except Exception as exc:
+            poll_error = exc
+            break
 
-    if order.status in TERMINAL_STATUSES:
+    if poll_error is not None:
+        # Parked like a queued order, so the next run's reconcile records
+        # what it did and its exposure counts until then.
+        status = "status_unknown"
+        logger.error(
+            "Order %s for %s was placed but its status could not be checked: %s "
+            "— will reconcile on the next run.",
+            order_id, ticker, poll_error,
+        )
+    elif order.status in TERMINAL_STATUSES:
         status = order.status.value
     elif order.status == OrderStatus.PARTIALLY_FILLED:
         # Explicitly distinguished from a generic timeout: there IS real
@@ -283,6 +385,8 @@ def submit_order(
         error = "order rejected by broker"
     elif status == "poll_timeout":
         error = f"order did not reach a terminal state within {POLL_TIMEOUT_SECONDS:.0f}s"
+    elif status == "status_unknown":
+        error = f"order placed but status check failed: {poll_error}"
 
     if order.status == OrderStatus.PARTIALLY_FILLED or status == "partially_filled_timeout":
         logger.info("Order %s partially filled: %s/%s", order_id, filled_qty, qty)
@@ -290,7 +394,7 @@ def submit_order(
     if side == "buy" and filled_qty > 0 and run_id is not None:
         record_entry(ticker, run_id, date.today().isoformat())
 
-    if status == "queued_for_next_session" and run_id is not None:
+    if status in ("queued_for_next_session", "status_unknown") and run_id is not None:
         pending = _load_pending()
         pending[str(order_id)] = {
             "ticker": ticker,

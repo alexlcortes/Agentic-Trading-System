@@ -55,7 +55,9 @@ import requests
 
 from config import settings
 from config.settings import RiskLimits
-from execution.alpaca_executor import _get_client, get_portfolio_state, reconcile_pending_orders
+from execution.alpaca_executor import (
+    _get_client, get_portfolio_state, reconcile_pending_orders, with_retry,
+)
 from agents.exit_rules import check_exit
 from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.confirmation import save_current
@@ -353,7 +355,7 @@ def run_once() -> list[dict]:
             resolved["result"]["status"], resolved["result"]["filled_qty"],
         )
 
-    if _get_client().get_clock().is_open:
+    if with_retry("clock check", _get_client().get_clock).is_open:
         logger.info("Market is currently open — skipping this run (schedule it after close).")
         _write_summary([], skip_reason="Market is currently open — skipping (run this after close).")
         return []
