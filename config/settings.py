@@ -33,7 +33,10 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 class RiskLimits:
     max_position_pct: float = 0.05
     max_daily_loss_pct: float = 0.02
-    max_open_positions: int = 5
+    # Raised from 5 on 2026-10-13: Oct 1-12, ISRG and MSFT were blocked on
+    # 6 of 7 runs for lack of a slot, and rotation's day-to-day picks kept
+    # changing so no swap ever confirmed. 8 x 5% caps investment at 40%.
+    max_open_positions: int = 8
     # Largest size_pct a human is ever even asked to approve via the
     # max_position_pct override. Anything above this is treated as a
     # malformed decision (e.g. the LLM writing 5.0 for "5%", i.e. 500%)

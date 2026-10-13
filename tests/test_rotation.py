@@ -88,7 +88,9 @@ def _fake_proposal(monkeypatch, action="swap", sell="GOOGL", buy="MSFT"):
 
 def _run(results=None, portfolio=None):
     return rotation.shadow_rotation(
-        results or _results(), RiskLimits(), get_state=lambda: portfolio or _portfolio()
+        results or _results(),
+        RiskLimits(max_open_positions=len(HELD)),
+        get_state=lambda: portfolio or _portfolio()
     )
 
 
