@@ -61,7 +61,7 @@ from execution.alpaca_executor import (
 from agents.exit_rules import check_exit
 from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.confirmation import save_current
-from orchestration.graph import run_trading_cycle
+from orchestration.graph import commit_trade, decide_trade
 from orchestration.rotation import blocked_candidates, shadow_rotation
 
 logging.basicConfig(
@@ -219,6 +219,28 @@ def _position_review_lines(entries: list[dict]) -> list[str]:
             lines.append(f"{label} SELL (confidence {decision['confidence']}, {day}){suffix}")
     return lines
 
+def _is_buy(state: dict) -> bool:
+    return (state.get("portfolio_decision") or {}).get("action") == "buy"
+
+
+def _rank_decisions(decided: list[dict]) -> list[dict]:
+    """Commit order: buys by the portfolio manager's confidence, highest
+    first, then everything else. Pending buys count toward
+    max_open_positions, so this order decides which buys get the open slots.
+    Before it, slots went by watchlist order — on 2026-10-13 MSFT and V took
+    the last ones while ABBV, the strongest technical buy, was blocked.
+    Ties keep watchlist order."""
+    return sorted(
+        decided,
+        key=lambda s: (0, -s["portfolio_decision"]["confidence"]) if _is_buy(s) else (1, 0.0),
+    )
+
+
+def _ranking_lines(ranked: list[dict]) -> list[str]:
+    buys = [f"{s['ticker']} {s['portfolio_decision']['confidence']}" for s in ranked if _is_buy(s)]
+    return [f"BUY RANKING (portfolio manager confidence): {', '.join(buys)}"] if buys else []
+
+
 def _save_proposals(results: list[dict], rotation: dict | None) -> None:
     """Record this run's review sells and rotation swap, so the next run can
     tell a repeat from a first day (orchestration.confirmation). Never raises."""
@@ -277,6 +299,7 @@ def _write_summary(
     skip_reason: str | None = None,
     exit_checks: list[dict] | None = None,
     rotation: dict | None = None,
+    ranking: list[str] | None = None,
 ) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
     lines = [f"\n=== {timestamp} ==="]
@@ -299,6 +322,7 @@ def _write_summary(
                 f"execution={execution}"
             )
 
+    lines += ranking or []
     lines += _blocked_lines(entries)
     lines += _rotation_lines(rotation)
     lines += _position_review_lines(entries)
@@ -371,23 +395,41 @@ def run_once() -> list[dict]:
 
     exit_checks = _shadow_exit_checks(limits)
 
-    results: list[dict] = []
-
+    # Phase 1: decide every ticker against the portfolio as it stands before
+    # the run. Nothing trades yet, so one fetch serves them all.
+    decided: list[dict] = []
+    failed: list[dict] = []
+    portfolio_state = get_portfolio_state()
     for ticker in limits.watchlist:
         try:
-            portfolio_state = get_portfolio_state()
-            final_state = run_trading_cycle(ticker, portfolio_state, risk_limits=limits)
-            results.append({"ticker": ticker, "final_state": final_state, "error": None})
+            decided.append(decide_trade(ticker, portfolio_state, risk_limits=limits))
         except Exception as exc:
             # Never let one ticker's failure silently kill the rest of the day's
             # run, or go unlogged — both are exactly what the Phase 9 checkpoint
             # ("no unhandled crashes or silent failures") is checking for.
             logger.exception("run_daily: %s failed", ticker)
+            failed.append({"ticker": ticker, "final_state": None, "error": str(exc)})
+
+    # Phase 2: commit strongest buy first, each against a fresh portfolio
+    # state, so the final risk check sees the slots earlier commits took.
+    ranked = _rank_decisions(decided)
+    logger.info("Commit order: %s", ", ".join(state["ticker"] for state in ranked))
+    results: list[dict] = []
+    for state in ranked:
+        ticker = state["ticker"]
+        try:
+            final_state = commit_trade(state, get_portfolio_state())
+            results.append({"ticker": ticker, "final_state": final_state, "error": None})
+        except Exception as exc:
+            logger.exception("run_daily: %s failed", ticker)
             results.append({"ticker": ticker, "final_state": None, "error": str(exc)})
+    results += failed
 
     rotation = shadow_rotation(results, limits)
     _save_proposals(results, rotation)
-    _write_summary(results, exit_checks=exit_checks, rotation=rotation)
+    _write_summary(
+        results, exit_checks=exit_checks, rotation=rotation, ranking=_ranking_lines(ranked),
+    )
     return results
 
 

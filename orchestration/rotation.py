@@ -26,13 +26,17 @@ SIGNAL_KEYS = ("technical_signal", "sentiment_signal", "fundamentals_signal")
 
 
 def blocked_candidates(results: list[dict]) -> list[dict]:
-    """The run_daily results whose buy the precheck rejected only because
-    the portfolio is full."""
+    """The run_daily results whose buy was rejected only because the portfolio
+    is full: by the precheck when it was full before the run, or by the final
+    check when stronger buys earlier in the run took the last slots."""
     return [
         entry
         for entry in results
         if not entry["error"]
-        and (entry["final_state"].get("risk_check") or {}).get("reason_code") == REASON_MAX_OPEN_POSITIONS
+        and REASON_MAX_OPEN_POSITIONS in (
+            (entry["final_state"].get("risk_check") or {}).get("reason_code"),
+            (entry["final_state"].get("risk_check_final") or {}).get("reason_code"),
+        )
     ]
 
 

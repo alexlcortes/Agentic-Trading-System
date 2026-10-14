@@ -12,6 +12,11 @@ Flow:
     execution -> log_and_end
     log_and_end -> END
 
+Split into two compiled graphs at portfolio_manager -> risk_final_check
+(build_decide_graph, build_commit_graph). run_daily decides every ticker,
+then commits them strongest buy first, so the open position slots go by
+the portfolio manager's confidence, not watchlist order.
+
 Two risk checks, not one (a deliberate deviation from a single risk_manager
 step): risk_precheck gives the portfolio manager's LLM an informative
 ceiling based on technical's suggested action; risk_final_check is the
@@ -433,7 +438,10 @@ def log_and_end_node(state: TradingState) -> dict:
     return {}
 
 
-def build_graph():
+def build_decide_graph():
+    """Phase 1, from analysis to the portfolio manager's decision. Nothing is
+    checked against final limits or traded, so run_daily can decide every
+    ticker before choosing which buys get the open slots."""
     graph = StateGraph(TradingState)
 
     graph.add_node("market_data", market_data_node)
@@ -441,18 +449,28 @@ def build_graph():
     graph.add_node("technical", technical_node)
     graph.add_node("risk_precheck", risk_precheck_node)
     graph.add_node("portfolio_manager", portfolio_manager_node)
-    graph.add_node("risk_final_check", risk_final_check_node)
-    graph.add_node("human_gate", human_gate_node)
-    graph.add_node("execution", execution_node)
-    graph.add_node("log_and_end", log_and_end_node)
 
     graph.add_edge(START, "market_data")
     graph.add_edge(START, "sentiment")
     graph.add_edge("market_data", "technical")
     graph.add_edge(["technical", "sentiment"], "risk_precheck")
     graph.add_edge("risk_precheck", "portfolio_manager")
-    graph.add_edge("portfolio_manager", "risk_final_check")
+    graph.add_edge("portfolio_manager", END)
 
+    return graph.compile()
+
+
+def build_commit_graph():
+    """Phase 2, a decided state through the authoritative risk check, the
+    human gate, execution and the audit log."""
+    graph = StateGraph(TradingState)
+
+    graph.add_node("risk_final_check", risk_final_check_node)
+    graph.add_node("human_gate", human_gate_node)
+    graph.add_node("execution", execution_node)
+    graph.add_node("log_and_end", log_and_end_node)
+
+    graph.add_edge(START, "risk_final_check")
     graph.add_conditional_edges(
         "risk_final_check",
         route_after_risk_final,
@@ -469,10 +487,9 @@ def build_graph():
     return graph.compile()
 
 
-def run_trading_cycle(
+def decide_trade(
     ticker: str, portfolio_state: dict, risk_limits: RiskLimits | None = None
 ) -> dict:
-    app = build_graph()
     initial_state: TradingState = {
         "run_id": uuid.uuid4().hex,
         "ticker": ticker,
@@ -480,4 +497,19 @@ def run_trading_cycle(
     }
     if risk_limits is not None:
         initial_state["risk_limits"] = risk_limits
-    return app.invoke(initial_state)
+    return build_decide_graph().invoke(initial_state)
+
+
+def commit_trade(decided_state: dict, portfolio_state: dict) -> dict:
+    """Run a decide_trade state through phase 2 against `portfolio_state`,
+    fetched now rather than when the ticker was decided — earlier commits in
+    the same run may have taken the open slots or the cash, and the final
+    risk check must see that."""
+    return build_commit_graph().invoke({**decided_state, "portfolio_state": portfolio_state})
+
+
+def run_trading_cycle(
+    ticker: str, portfolio_state: dict, risk_limits: RiskLimits | None = None
+) -> dict:
+    """Both phases for one ticker, against the same portfolio state."""
+    return commit_trade(decide_trade(ticker, portfolio_state, risk_limits), portfolio_state)
