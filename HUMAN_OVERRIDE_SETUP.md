@@ -246,7 +246,12 @@ reload it.
 
 5. **Add a Wait node.**
    - Resume: **"On Webhook Call"**
-   - Limit: **enabled**, 600 seconds (matches `OVERRIDE_TIMEOUT_SECONDS`)
+   - Limit: **enabled**, unit seconds, amount set to an expression that reads
+     the request's `timeout_seconds`, falling back to 600:
+     `{{ Number($('Webhook').item.json.body.timeout_seconds) || 600 }}`.
+     The first version hardcoded 600, so `OVERRIDE_TIMEOUT_SECONDS` in
+     `.env` had no effect on n8n. A 60-second test request on 2026-10-14
+     still waited 600s. With the expression, it timed out at 60s.
    - When resumed, the query string from the tapped action
      (`?approved=true` / `?approved=false`) is available on the next node as
      `{{$json.query.approved}}`. On timeout, the workflow continues with no
