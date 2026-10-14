@@ -32,12 +32,16 @@ class PortfolioDecision(BaseModel):
 
 def _forced_hold(ticker: str, reasoning: str) -> dict:
     """A decision made entirely in code, with no LLM call — used whenever
-    the risk manager has already made the outcome a foregone conclusion."""
+    the risk manager has already made the outcome a foregone conclusion.
+
+    Confidence is None, not 1.0: no model judged anything, and holds at 1.0
+    were 335 of 383 live decisions (Sep 10 - Oct 13), inflating any read of
+    the portfolio manager's confidence from trades.jsonl."""
     return {
         "ticker": ticker,
         "action": "hold",
         "size_pct": 0.0,
-        "confidence": 1.0,
+        "confidence": None,
         "reasoning": reasoning,
     }
 

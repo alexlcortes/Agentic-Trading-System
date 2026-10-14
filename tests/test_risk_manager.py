@@ -2,6 +2,7 @@ import pytest
 
 from agents import risk_manager
 from agents.risk_manager import (
+    REASON_BELOW_MIN_BUY,
     REASON_BELOW_ONE_SHARE,
     REASON_DAILY_LOSS_HALT,
     REASON_MAX_POSITION_PCT,
@@ -20,6 +21,10 @@ def no_kill_switch(tmp_path, monkeypatch):
     # Never let a real KILL_SWITCH file or env var in the checkout decide a test.
     monkeypatch.setattr(settings, "kill_switch", False)
     monkeypatch.setattr(risk_manager, "KILL_SWITCH_FILE", tmp_path / "KILL_SWITCH")
+
+
+# For the share-count tests, whose sizes sit under the minimum buy.
+NO_MIN_BUY = RiskLimits(min_buy_fraction_of_cap=0.0)
 
 
 def _state(equity, positions=None, pnl=0.0):
@@ -90,7 +95,7 @@ def test_room_under_one_share_is_a_cap_rejection():
 
 
 def test_requested_size_under_one_share_is_rejected():
-    result = check_trade(_buy(0.0034, price=765.73), _state(100000.0), RiskLimits())
+    result = check_trade(_buy(0.0034, price=765.73), _state(100000.0), NO_MIN_BUY)
     assert result["approved"] is False
     assert result["reason_code"] == REASON_BELOW_ONE_SHARE
 
@@ -123,7 +128,7 @@ def test_capped_sell_of_whole_position_is_approved():
 
 
 def test_no_price_skips_the_share_check():
-    result = check_trade(_buy(0.0034), _state(100000.0), RiskLimits())
+    result = check_trade(_buy(0.0034), _state(100000.0), NO_MIN_BUY)
     assert result["approved"] is True
 
 
@@ -136,3 +141,35 @@ def test_rejects_a_nan_price():
     # 2026-09-30: a NaN close got past the "<= 0" check and crashed shares_for.
     with pytest.raises(ValueError, match="positive number"):
         check_trade(_buy(price=float("nan")), _state(100000.0), RiskLimits())
+
+
+def test_a_sliver_top_up_near_the_cap_counts_as_at_the_cap():
+    # GOOGL 2026-10-12: 0.44% of room left, bought as a 1-share top-up.
+    result = check_trade(_buy(price=350.0), _state(100000.0, {"X": 4564.0}), RiskLimits())
+    assert result["approved"] is False
+    assert result["reason_code"] == REASON_MAX_POSITION_PCT
+    assert "minimum buy (0.50%)" in result["reasons"][0]
+
+
+def test_a_small_requested_buy_is_rejected():
+    result = check_trade(_buy(0.003, price=100.0), _state(100000.0), RiskLimits())
+    assert result["approved"] is False
+    assert result["reason_code"] == REASON_BELOW_MIN_BUY
+
+
+def test_a_buy_at_exactly_the_minimum_is_approved():
+    result = check_trade(_buy(0.005, price=100.0), _state(100000.0), RiskLimits())
+    assert result["approved"] is True
+
+
+def test_the_minimum_scales_with_the_cap():
+    # Live caps positions at 1%, so the minimum there is 0.1%, not 0.5%.
+    live = RiskLimits(max_position_pct=0.01)
+    result = check_trade(_buy(0.003, price=100.0), _state(100000.0), live)
+    assert result["approved"] is True
+
+
+def test_a_small_sell_is_never_blocked_by_the_minimum():
+    sell = {"ticker": "X", "action": "sell", "size_pct": 0.002, "price": 100.0}
+    result = check_trade(sell, _state(100000.0, {"X": 200.0}), RiskLimits())
+    assert result["approved"] is True

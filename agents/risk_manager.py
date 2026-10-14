@@ -86,6 +86,7 @@ REASON_POSITION_RESIZED = "position_resized_to_limit"
 REASON_NO_POSITION_TO_SELL = "no_existing_position_to_sell"
 REASON_SELL_CAPPED = "sell_capped_to_position"
 REASON_BELOW_ONE_SHARE = "below_one_share"
+REASON_BELOW_MIN_BUY = "below_min_buy"
 REASON_WITHIN_LIMITS = "within_limits"
 
 # Tolerance for threshold comparisons, so "exactly at the limit" counts as
@@ -231,6 +232,31 @@ def check_trade(proposed_trade: dict, portfolio_state: dict, limits: RiskLimits)
                     f"max_position_pct ({limits.max_position_pct:.2%}) — no room to add"
                 ],
                 "reason_code": REASON_MAX_POSITION_PCT,
+            }
+
+        min_buy_pct = limits.min_buy_fraction_of_cap * limits.max_position_pct
+        if adjusted_size_pct < min_buy_pct - EPSILON:
+            if reason_code == REASON_POSITION_RESIZED:
+                # Treated as at the cap, like room under one share below,
+                # so position review's at-cap trigger still sees it.
+                return {
+                    "approved": False,
+                    "adjusted_size": 0.0,
+                    "reasons": [
+                        f"room left under max_position_pct for {ticker} "
+                        f"({adjusted_size_pct:.2%} of equity) is under the minimum buy "
+                        f"({min_buy_pct:.2%}) — no room to add"
+                    ],
+                    "reason_code": REASON_MAX_POSITION_PCT,
+                }
+            return {
+                "approved": False,
+                "adjusted_size": 0.0,
+                "reasons": [
+                    f"requested {adjusted_size_pct:.2%} of equity is under the minimum buy "
+                    f"({min_buy_pct:.2%})"
+                ],
+                "reason_code": REASON_BELOW_MIN_BUY,
             }
 
         if price is not None and shares_for(round(adjusted_size_pct, 6), equity, price) < 1:

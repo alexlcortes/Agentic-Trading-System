@@ -49,6 +49,12 @@ class RiskLimits:
     # malformed decision (e.g. the LLM writing 5.0 for "5%", i.e. 500%)
     # and auto-declined without sending a notification.
     max_override_size_pct: float = 0.10
+    # Smallest buy, as a fraction of max_position_pct (0.5% of equity at the
+    # 5% paper cap; scales down with LIVE_MAX_POSITION_PCT). Sep 14 - Oct 12,
+    # positions near the cap were topped up with slivers of 0.01%-0.4% —
+    # 1-share orders, or ones that rounded to zero shares. Sells are exempt:
+    # exiting a small position must always be possible.
+    min_buy_fraction_of_cap: float = 0.10
     # Exit rules (agents/exit_rules.py). Placeholders, not tuned — validate
     # with backtest/runner.py before trusting them. At max_position_pct=0.05,
     # an 8% stop risks ~0.4% of equity per position.

@@ -43,7 +43,9 @@ from agents.fundamentals_agent import get_fundamentals
 from agents.human_override import request_override
 from agents.market_data_agent import get_price_data
 from agents.portfolio_manager import review_position, synthesize_decision
-from agents.risk_manager import REASON_MAX_POSITION_PCT, check_trade, shares_for
+from agents.risk_manager import (
+    REASON_MAX_OPEN_POSITIONS, REASON_MAX_POSITION_PCT, check_trade, shares_for,
+)
 from agents.sentiment_agent import get_news_sentiment
 from agents.technical_agent import get_technical_signal
 from config import settings
@@ -316,6 +318,16 @@ def risk_final_check_node(state: TradingState) -> dict:
             forced["action"] = "hold"
             forced["size_pct"] = 0.0
             note = f" [OVERRIDDEN: final risk check rejected this trade — {reasons}]"
+            if (
+                risk_check_final.get("reason_code") == REASON_MAX_OPEN_POSITIONS
+                and state["risk_check"].get("reason_code") != REASON_MAX_OPEN_POSITIONS
+            ):
+                # The reasoning above was written while a slot was open; say
+                # where it went, so the log doesn't read as a contradiction.
+                note += (
+                    " [A slot was open when this ticker was decided; stronger buys "
+                    "committed earlier in this run took it]"
+                )
             if override_result is not None:
                 note += f" [human override declined/unavailable — {override_result['reason']}]"
             forced["reasoning"] += note

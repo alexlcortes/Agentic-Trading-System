@@ -145,6 +145,7 @@ def test_open_slots_go_to_the_strongest_buys(run):
         assert state["risk_check_final"]["reason_code"] == risk_manager.REASON_MAX_OPEN_POSITIONS
         assert state["portfolio_decision"]["action"] == "hold"
         assert state.get("execution_result") is None
+        assert "stronger buys committed earlier in this run took it" in state["portfolio_decision"]["reasoning"]
     assert [e["ticker"] for e in rotation.blocked_candidates(results)] == ["MSFT", "V"]
 
 
