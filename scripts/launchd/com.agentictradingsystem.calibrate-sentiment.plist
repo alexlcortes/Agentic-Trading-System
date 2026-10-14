@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentictradingsystem.calibrate-sentiment</string>
+
+    <!--
+    Runs scripts/calibrate_sentiment.py, saves the report to
+    logs/sentiment_calibration_<date>.txt and posts a macOS notification.
+    Local, not a cloud routine: trades.jsonl is gitignored and only exists
+    on this machine. uv is looked up like scripts/run_daily_with_n8n.sh does:
+    launchd's login shell may not have it on PATH.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/neuromancer/dev/agentic-trading-system &amp;&amp; out="logs/sentiment_calibration_$(date +%F).txt" &amp;&amp; if "${UV:-$(command -v uv || echo $HOME/.local/bin/uv)}" run python scripts/calibrate_sentiment.py --out "$out" &gt;&gt; logs/calibration.log 2&gt;&amp;1; then osascript -e "display notification \"Report: $out\" with title \"Sentiment calibration ready\""; else osascript -e 'display notification "Failed — see logs/calibration.log" with title "Sentiment calibration"'; fi</string>
+    </array>
+
+    <!--
+    Dec 15, 17:00 local. Dec 1 would give ~38 usable decision dates
+    (about 1 run in 5 has been missed), under the script's MIN_DATES of 40.
+    launchd runs a fire missed while asleep on wake, like the daily job.
+    StartCalendarInterval repeats yearly; a yearly re-check is fine.
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key><integer>12</integer>
+        <key>Day</key><integer>15</integer>
+        <key>Hour</key><integer>17</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/calibration.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/calibration.log</string>
+</dict>
+</plist>

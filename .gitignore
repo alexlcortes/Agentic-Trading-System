@@ -28,3 +28,4 @@ logs/last_completed_run.json
 
 # Kill switch sentinel (operational state, not code)
 /KILL_SWITCH
+logs/sentiment_calibration_*.txt
