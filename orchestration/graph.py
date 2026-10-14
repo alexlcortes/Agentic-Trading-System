@@ -3,8 +3,9 @@
 Flow:
     START -> market_data ─┐
     START -> sentiment ───┤
+    START -> fundamentals ┤
     market_data -> technical
-    [technical, sentiment] -> risk_precheck   (fan-in join)
+    [technical, sentiment, fundamentals] -> risk_precheck   (fan-in join)
     risk_precheck -> portfolio_manager
     portfolio_manager -> risk_final_check
     risk_final_check -> human_gate | log_and_end   (skip if rejected/hold)
@@ -38,6 +39,7 @@ from typing import Optional, TypedDict
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
+from agents.fundamentals_agent import get_fundamentals
 from agents.human_override import request_override
 from agents.market_data_agent import get_price_data
 from agents.portfolio_manager import review_position, synthesize_decision
@@ -92,6 +94,18 @@ def market_data_node(state: TradingState) -> dict:
 def sentiment_node(state: TradingState) -> dict:
     sentiment_signal = get_news_sentiment(state["ticker"])
     return {"sentiment_signal": sentiment_signal}
+
+
+def fundamentals_node(state: TradingState) -> dict:
+    """A minor, advisory input (see agents/fundamentals_agent.py). Never
+    raises: a failure here leaves fundamentals out of the prompts, which is
+    how every run worked before this node existed, rather than costing the
+    ticker its run."""
+    try:
+        return {"fundamentals_signal": get_fundamentals(state["ticker"])}
+    except Exception:
+        logger.exception("Fundamentals failed for %s — deciding without them", state["ticker"])
+        return {"fundamentals_signal": None}
 
 
 def technical_node(state: TradingState) -> dict:
@@ -446,14 +460,16 @@ def build_decide_graph():
 
     graph.add_node("market_data", market_data_node)
     graph.add_node("sentiment", sentiment_node)
+    graph.add_node("fundamentals", fundamentals_node)
     graph.add_node("technical", technical_node)
     graph.add_node("risk_precheck", risk_precheck_node)
     graph.add_node("portfolio_manager", portfolio_manager_node)
 
     graph.add_edge(START, "market_data")
     graph.add_edge(START, "sentiment")
+    graph.add_edge(START, "fundamentals")
     graph.add_edge("market_data", "technical")
-    graph.add_edge(["technical", "sentiment"], "risk_precheck")
+    graph.add_edge(["technical", "sentiment", "fundamentals"], "risk_precheck")
     graph.add_edge("risk_precheck", "portfolio_manager")
     graph.add_edge("portfolio_manager", END)
 

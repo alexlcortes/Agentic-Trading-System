@@ -113,6 +113,7 @@ def run(monkeypatch):
 
     monkeypatch.setattr(graph, "get_price_data", lambda t: pd.DataFrame({"Close": [PRICE]}))
     monkeypatch.setattr(graph, "get_news_sentiment", lambda t: {"sentiment": "neutral", "confidence": 0.5})
+    monkeypatch.setattr(graph, "get_fundamentals", lambda t: None)
     monkeypatch.setattr(
         graph, "get_technical_signal",
         lambda prices: {"signal": "buy", "confidence": 0.8, "reasoning": "t"},
