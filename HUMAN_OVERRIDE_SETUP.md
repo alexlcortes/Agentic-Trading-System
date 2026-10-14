@@ -197,6 +197,24 @@ reload it.
 
 ## Step-by-step: n8n workflow
 
+**Shortcut: import the saved copy.** `scripts/n8n/trading-override.workflow.json`
+is an export of the working workflow, taken 2026-10-14. Two secrets are
+replaced with placeholders: the webhook secret in the `If` node and the ntfy
+topic in the `HTTP Request` node's URL. To restore it, for example on the
+Pi, copy the file somewhere outside the repo, fill in both values (the
+secret is `N8N_OVERRIDE_SECRET` in `.env`), and with n8n stopped run:
+```
+n8n import:workflow --input=<your filled-in copy>
+n8n publish:workflow --id=eyptXu9TTpAMvi3H
+```
+Import always switches the workflow off. `publish` switches it back on.
+Import also overwrites the workflow with the same id, so re-importing on a
+machine that already has it is an update, not a duplicate. Never commit the
+filled-in copy. If you change the workflow in the editor, export it again
+(`n8n export:workflow --id=eyptXu9TTpAMvi3H --output=...`) and replace the
+two secrets with placeholders before committing. The manual steps below
+build the same workflow from scratch.
+
 1. **Create a new workflow** in n8n, name it `trading-override`.
 
 2. **Add a Webhook node** (trigger).

@@ -1,0 +1,352 @@
+{
+  "id": "eyptXu9TTpAMvi3H",
+  "name": "trading-override",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "override-a1e9f2",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "0971a8eb-1f8d-419b-86cf-65d666df09bf",
+      "name": "Webhook",
+      "webhookId": "09617b38-5cb9-42c4-bf58-69e34dd704b7"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "20f5a245-6e7d-4ab5-b5e2-222ccc3f429e",
+              "leftValue": "={{$json.headers['x-override-secret']}}",
+              "rightValue": "<N8N_OVERRIDE_SECRET from .env>",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        224,
+        0
+      ],
+      "id": "03b4bf47-99c9-4692-9352-3577894ee1fb",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "{\"error\": \"unauthorized\"}",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        448,
+        96
+      ],
+      "id": "e0633856-9263-4522-861d-60a31b2491b5",
+      "name": "error"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/<your-ntfy-topic>",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "=Title",
+              "value": "=Risk override: {{$json.body.ticker}}"
+            },
+            {
+              "name": "=Action",
+              "value": "=http, Approve, {{$execution.resumeUrl}}&approved=true, method=GET; http, Deny, {{$execution.resumeUrl}}&approved=false, method=GET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "body": "={{$json.body.message}}\n{{$json.body.reasoning}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        -96
+      ],
+      "id": "b028ba79-b7d1-4a98-8c70-3f7b10179df2",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "limitWaitTime": true,
+        "resumeAmount": "={{ Number($('Webhook').item.json.body.timeout_seconds) || 600 }}",
+        "resumeUnit": "seconds",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        -96
+      ],
+      "id": "f8d0d4b5-7cae-48a4-9512-463b67652ccd",
+      "name": "Wait",
+      "webhookId": "ec41e11a-b309-4692-b406-325dc1ed7e9e"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e14ad8f1-fa60-4ee7-91ee-6022539d6278",
+              "leftValue": "={{$json.query.approved}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        -96
+      ],
+      "id": "c5677ce4-02c8-47df-9cfc-8d0545f5b1be",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7de23e7c-1ab1-496c-b0a1-f452b62a3ed3",
+              "name": "approved",
+              "value": "={{$json.query.approved === 'true'}}",
+              "type": "boolean"
+            },
+            {
+              "id": "ac311b25-fda3-40d1-8faf-35d4a9a575d3",
+              "name": "responder",
+              "value": "ntfy",
+              "type": "string"
+            },
+            {
+              "id": "bc12dd9b-c7cb-4b70-8a88-852d00ba9ebf",
+              "name": "reason",
+              "value": "={{ $json.query.approved === 'true' ? 'approved via push notification' : 'denied via push notification' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        1120,
+        -192
+      ],
+      "id": "248e4e8b-09ba-4833-af48-62463b14d9ed",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "18fd0174-6f6a-454b-8eb2-729ee38014ac",
+              "name": "approved",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "e9eeaf0f-98b9-4172-897d-0f147df40f55",
+              "name": "reason",
+              "value": "timed out",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        1120,
+        0
+      ],
+      "id": "dd8ecc35-4169-4264-af34-993f3c9d4f8a",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1344,
+        -192
+      ],
+      "id": "e4c6b17b-337a-4ffa-ac65-ba707f0e2213",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1344,
+        0
+      ],
+      "id": "8b2371c3-cdd0-4205-b8c1-b67c1a8c5f45",
+      "name": "Respond to Webhook1"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "active": false
+}
