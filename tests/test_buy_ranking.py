@@ -17,6 +17,7 @@ from config.settings import RiskLimits
 from execution import alpaca_executor
 from logs import audit_logger
 from orchestration import confirmation, graph, rotation
+from orchestration.ranking import rank_for_commit
 
 HELD = ["AAPL", "GOOGL", "PG", "SPY", "XOM"]
 PRICE = 100.0
@@ -49,16 +50,16 @@ def test_buys_commit_first_strongest_first():
         _decided("UNP", "sell", 0.80),
         _decided("ABBV", "buy", 0.90),
     ]
-    assert [s["ticker"] for s in run_daily._rank_decisions(decided)] == ["ABBV", "MSFT", "V", "JPM", "UNP"]
+    assert [s["ticker"] for s in rank_for_commit(decided)] == ["ABBV", "MSFT", "V", "JPM", "UNP"]
 
 
 def test_ties_keep_watchlist_order():
     decided = [_decided("A", "buy", 0.8), _decided("B", "buy", 0.8)]
-    assert [s["ticker"] for s in run_daily._rank_decisions(decided)] == ["A", "B"]
+    assert [s["ticker"] for s in rank_for_commit(decided)] == ["A", "B"]
 
 
 def test_ranking_line_lists_buys_in_commit_order():
-    ranked = run_daily._rank_decisions([_decided("A", "buy", 0.7), _decided("B", "buy", 0.9), _decided("C", "hold", 1.0)])
+    ranked = rank_for_commit([_decided("A", "buy", 0.7), _decided("B", "buy", 0.9), _decided("C", "hold", 1.0)])
     assert run_daily._ranking_lines(ranked) == ["BUY RANKING (portfolio manager confidence): B 0.9, A 0.7"]
 
 

@@ -63,6 +63,7 @@ from agents.exit_rules import check_exit
 from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.confirmation import save_current
 from orchestration.graph import commit_trade, decide_trade
+from orchestration.ranking import is_buy, rank_for_commit
 from orchestration.rotation import blocked_candidates, shadow_rotation
 
 logging.basicConfig(
@@ -243,25 +244,8 @@ def _position_review_lines(entries: list[dict]) -> list[str]:
             lines.append(f"{label} SELL (confidence {decision['confidence']}, {day}){suffix}")
     return lines
 
-def _is_buy(state: dict) -> bool:
-    return (state.get("portfolio_decision") or {}).get("action") == "buy"
-
-
-def _rank_decisions(decided: list[dict]) -> list[dict]:
-    """Commit order: buys by the portfolio manager's confidence, highest
-    first, then everything else. Pending buys count toward
-    max_open_positions, so this order decides which buys get the open slots.
-    Before it, slots went by watchlist order — on 2026-10-13 MSFT and V took
-    the last ones while ABBV, the strongest technical buy, was blocked.
-    Ties keep watchlist order."""
-    return sorted(
-        decided,
-        key=lambda s: (0, -s["portfolio_decision"]["confidence"]) if _is_buy(s) else (1, 0.0),
-    )
-
-
 def _ranking_lines(ranked: list[dict]) -> list[str]:
-    buys = [f"{s['ticker']} {s['portfolio_decision']['confidence']}" for s in ranked if _is_buy(s)]
+    buys = [f"{s['ticker']} {s['portfolio_decision']['confidence']}" for s in ranked if is_buy(s)]
     return [f"BUY RANKING (portfolio manager confidence): {', '.join(buys)}"] if buys else []
 
 
@@ -444,7 +428,7 @@ def run_once(force: bool = False) -> list[dict]:
 
     # Phase 2: commit strongest buy first, each against a fresh portfolio
     # state, so the final risk check sees the slots earlier commits took.
-    ranked = _rank_decisions(decided)
+    ranked = rank_for_commit(decided)
     logger.info("Commit order: %s", ", ".join(state["ticker"] for state in ranked))
     results: list[dict] = []
     for state in ranked:

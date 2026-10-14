@@ -19,6 +19,11 @@ than the simulated cash balance), a simulation-level safety layer on
 top of check_trade's equity-pct constraint, since check_trade has no
 concept of literal cash.
 
+Each day follows run_daily's order: every ticker is decided against the
+portfolio as the day started, then committed strongest buy first, with
+each final risk check counting the buys already queued that day (and any
+earlier ones still waiting to fill) toward max_open_positions.
+
 Every simulated decision is logged through the same audit_logger as
 live trading (log_decision), with run_id prefixed "backtest-" so the
 two are distinguishable in logs/trades.jsonl.
@@ -35,6 +40,7 @@ from agents.risk_manager import check_trade
 from agents.technical_agent import MIN_REQUIRED_ROWS, get_technical_signal
 from config.settings import RiskLimits
 from logs.audit_logger import log_decision
+from orchestration.ranking import rank_for_commit
 
 logger = logging.getLogger(__name__)
 
@@ -177,10 +183,14 @@ def run_backtest(
         # Boolean masking on .index.date (not .loc[:Timestamp]) sidesteps tz-aware
         # vs. tz-naive comparison errors from yfinance's tz-aware index.
         slices_today = {t: price_data[t][price_data[t].index.date <= sim_day] for t in tickers}
+        for ticker in tickers:
+            slice_df = slices_today[ticker]
+            closes_today[ticker] = float(slice_df["Close"].iloc[-1]) if not slice_df.empty else None
+
         open_positions_value = {
-            t: positions[t]["qty"] * float(slices_today[t]["Close"].iloc[-1])
+            t: positions[t]["qty"] * closes_today[t]
             for t in tickers
-            if positions[t]["qty"] > 0 and not slices_today[t].empty
+            if positions[t]["qty"] > 0 and closes_today[t] is not None
         }
         equity_snapshot = cash + sum(open_positions_value.values())
         # Same approximation as execution/alpaca_executor.py's get_portfolio_state
@@ -188,11 +198,25 @@ def run_backtest(
         # not a pure realized-only figure, computed once per day and applied
         # account-wide to every ticker's check that day (not reset per ticker).
         daily_pnl_so_far = equity_snapshot - previous_day_equity
+        # Exposure, unlike equity, also counts buys still waiting to fill, as
+        # live's get_portfolio_state counts pending orders.
+        for order in pending_fills:
+            if order["action"] == "buy" and closes_today[order["ticker"]] is not None:
+                t = order["ticker"]
+                open_positions_value[t] = open_positions_value.get(t, 0.0) + order["qty"] * closes_today[t]
 
+        def portfolio_state() -> dict:
+            return {
+                "equity": equity_snapshot,
+                "open_positions": dict(open_positions_value),
+                "daily_realized_pnl": daily_pnl_so_far,
+            }
+
+        # 2a. Decide every ticker against the portfolio as the day started,
+        # as run_daily does, before any of today's orders are queued.
+        decided = []
         for ticker in tickers:
             slice_df = slices_today[ticker]
-            closes_today[ticker] = float(slice_df["Close"].iloc[-1]) if not slice_df.empty else None
-
             if len(slice_df) < MIN_REQUIRED_ROWS:
                 continue  # still in warmup for this ticker
 
@@ -202,32 +226,44 @@ def run_backtest(
                 logger.warning("Backtest: technical signal failed for %s on %s: %s", ticker, sim_day, exc)
                 continue
 
-            portfolio_state = {
-                "equity": equity_snapshot,
-                "open_positions": open_positions_value,
-                "daily_realized_pnl": daily_pnl_so_far,
-            }
-
             action = technical_signal["signal"]
             if action == "hold":
                 proposed = {"ticker": ticker, "action": "hold", "size_pct": 0.0}
             else:
-                proposed = {"ticker": ticker, "action": action, "size_pct": limits.max_position_pct}
-            risk_check = check_trade(proposed, portfolio_state, limits)
+                proposed = {
+                    "ticker": ticker, "action": action,
+                    "size_pct": limits.max_position_pct, "price": closes_today[ticker],
+                }
+            risk_check = check_trade(proposed, portfolio_state(), limits)
             if not risk_check["approved"]:
                 risk_precheck_rejections += 1
 
-            decision = synthesize_decision(
-                ticker=ticker,
-                technical_signal=technical_signal,
-                sentiment_signal=NEUTRAL_SENTIMENT_STUB,
-                risk_check=risk_check,
-                fundamentals_signal=None,
-            )
+            decided.append({
+                "ticker": ticker,
+                "technical_signal": technical_signal,
+                "risk_check": risk_check,
+                "portfolio_decision": synthesize_decision(
+                    ticker=ticker,
+                    technical_signal=technical_signal,
+                    sentiment_signal=NEUTRAL_SENTIMENT_STUB,
+                    risk_check=risk_check,
+                    fundamentals_signal=None,
+                ),
+            })
 
+        # 2b. Commit strongest buy first, each against exposure that includes
+        # the buys already queued today — without this, every buy on a day
+        # saw the day-start position count, and the backtest could open more
+        # than max_open_positions at once.
+        for state in rank_for_commit(decided):
+            ticker = state["ticker"]
+            decision = state["portfolio_decision"]
             final_check = check_trade(
-                {"ticker": decision["ticker"], "action": decision["action"], "size_pct": decision["size_pct"]},
-                portfolio_state,
+                {
+                    "ticker": decision["ticker"], "action": decision["action"],
+                    "size_pct": decision["size_pct"], "price": closes_today[ticker],
+                },
+                portfolio_state(),
                 limits,
             )
             if not final_check["approved"]:
@@ -252,14 +288,18 @@ def run_backtest(
                     }
                     pending_fills.append(order)
                     execution_result = {"status": "pending_fill_next_open", "qty": target_qty}
+                    if decision["action"] == "buy":
+                        open_positions_value[ticker] = (
+                            open_positions_value.get(ticker, 0.0) + target_qty * closes_today[ticker]
+                        )
 
             log_decision(
                 run_id=f"backtest-{ticker}-{sim_day.isoformat()}",
                 timestamp=datetime.combine(sim_day, datetime.min.time(), tzinfo=timezone.utc),
                 agent_outputs={
-                    "technical_signal": technical_signal,
+                    "technical_signal": state["technical_signal"],
                     "sentiment_signal": NEUTRAL_SENTIMENT_STUB,
-                    "risk_check": risk_check,
+                    "risk_check": state["risk_check"],
                     "risk_check_final": final_check,
                 },
                 final_decision=decision,
