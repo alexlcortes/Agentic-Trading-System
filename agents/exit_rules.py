@@ -16,7 +16,7 @@ Contract:
 
     returns {
         "exit": bool,               # True = sell the whole position, no LLM override
-        "review": bool,             # True = flag for the (future) LLM thesis review
+        "review": bool,             # True = flag answered by the position review
         "reasons": [str, ...],
         "reason_code": str,
     }
@@ -32,7 +32,12 @@ Design notes:
       different name.
     - max_holding_days never forces a sell. A position going nowhere for a
       month is a question ("is the reason we bought this still true?"),
-      not an answer, so it only sets review=True.
+      not an answer, so it only sets review=True. The position review
+      (orchestration/graph.py) is what asks that question, and run_daily's
+      summary reports its answer next to the flag. The flag stays out of the
+      review prompt: "you've held this 30 days" pushes toward selling on
+      time alone, and asking whether the reason for buying still holds
+      anchors on the entry (PROMPT_PATTERNS.md #10).
     - Rollout: these rules run in shadow mode first (log what would have
       exited, trade nothing) so the paper trial isn't measuring two
       different systems halfway through.

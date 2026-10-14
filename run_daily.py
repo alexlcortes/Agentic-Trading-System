@@ -195,7 +195,30 @@ def _shadow_exit_checks(limits: RiskLimits) -> list[dict]:
         return [{"ticker": None, "error": True}]
 
 
-def _exit_summary_lines(exit_checks: list[dict]) -> list[str]:
+def _review_outcome(ticker: str, entries: list[dict]) -> str:
+    """What answered a review flag from the exit rules. The flag asks whether
+    a position still deserves its place; the position review is what asks the
+    model that, so the flag reports the review's answer, or why none ran."""
+    entry = next((e for e in entries if e["ticker"] == ticker), None)
+    if entry is None:
+        return "not reviewed — no run for this ticker today"
+    if entry["error"]:
+        return "not reviewed — this ticker's run failed"
+    final_state = entry["final_state"]
+    review = final_state.get("position_review")
+    if review:
+        if review.get("error"):
+            return f"position review failed — {review['error']}"
+        if review.get("decision") is None:
+            return f"position review skipped — {'; '.join(review['sell_check']['reasons'])}"
+        decision = review["decision"]
+        return f"answered by position review: {decision['action'].upper()} (confidence {decision['confidence']})"
+    signal = (final_state.get("technical_signal") or {}).get("signal")
+    action = (final_state.get("portfolio_decision") or {}).get("action")
+    return f"not reviewed — technical signal was {signal}, so the portfolio manager decided it ({action})"
+
+
+def _exit_summary_lines(exit_checks: list[dict], entries: list[dict] | None = None) -> list[str]:
     if not exit_checks:
         return []
     if any(c.get("error") for c in exit_checks):
@@ -205,9 +228,10 @@ def _exit_summary_lines(exit_checks: list[dict]) -> list[str]:
         result = c["result"]
         if result["exit"] or result["review"]:
             label = "WOULD EXIT" if result["exit"] else "REVIEW"
+            outcome = "no order placed" if result["exit"] else _review_outcome(c["ticker"], entries or [])
             lines.append(
                 f"EXIT RULES (shadow): {c['ticker']} {label} [{result['reason_code']}] "
-                f"{'; '.join(result['reasons'])} — no order placed"
+                f"{'; '.join(result['reasons'])} — {outcome}"
             )
     if not lines:
         plpcs = ", ".join(
@@ -334,7 +358,7 @@ def _write_summary(
     lines += _blocked_lines(entries)
     lines += _rotation_lines(rotation)
     lines += _position_review_lines(entries)
-    lines += _exit_summary_lines(exit_checks or [])
+    lines += _exit_summary_lines(exit_checks or [], entries)
 
     with open(SUMMARY_LOG_PATH, "a") as f:
         f.write("\n".join(lines) + "\n")
