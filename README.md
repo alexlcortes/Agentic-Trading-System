@@ -21,6 +21,17 @@ cp scripts/launchd/com.agentictradingsystem.daily.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
 ```
 
+### Update (after the plist changes)
+
+The installed file is a copy, so copy it again before reloading. Reloading
+alone keeps the old version (see `HUMAN_OVERRIDE_SETUP.md`):
+
+```
+cp scripts/launchd/com.agentictradingsystem.daily.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u)/com.agentictradingsystem.daily
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
+```
+
 ### Uninstall
 
 ```

@@ -143,7 +143,8 @@ process on exit. The launchd plist
 wrapper instead of `run_daily.py` directly. **Verified working** (manual
 run of the wrapper on 2026-09-17: n8n started, auto-activated the saved
 workflow, bound to the LAN IP, and shut down cleanly after `run_daily.py`
-exited).
+exited). The scheduled job only uses it once the plist is installed, as
+described below. That didn't happen until 2026-10-14.
 
 **For the manual/interactive build below**, set the same two env vars
 yourself before running `n8n start`, or you'll hit a cookie error (see
@@ -161,14 +162,27 @@ only affect what URLs n8n *generates*, not what address you browse to.
 workflow is built and active** — the wrapper degrades gracefully (it'll
 just skip straight to `run_daily.py` if `n8n` isn't found or never becomes
 healthy), but there's no point reloading it before there's a workflow for
-it to talk to. When you're ready:
+it to talk to. When you're ready, copy the repo's plist into place, then
+reload it:
 ```
-launchctl unload ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
-launchctl load ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
+cp scripts/launchd/com.agentictradingsystem.daily.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist
 ```
-(adjust the path if the plist is symlinked/copied somewhere other than
-`~/Library/LaunchAgents` — run `launchctl list | grep agentictradingsystem`
-to confirm what's currently loaded first).
+**The copy step matters.** The file in `~/Library/LaunchAgents` is a
+separate copy, not a link, so reloading alone just reloads the old version.
+That happened here: the installed copy stayed the Sep 16 version, which ran
+`run_daily.py` directly. From Sep 17 to Oct 13 no scheduled run started n8n.
+The override approvals on Sep 25 and 28 only worked because an n8n started
+by hand was still running. The Oct 9 request got "connection refused". The
+wrapper's run time limit wasn't in effect either. Confirm what launchd
+actually runs with:
+```
+launchctl print gui/$(id -u)/com.agentictradingsystem.daily | grep -A4 "arguments = {"
+diff ~/Library/LaunchAgents/com.agentictradingsystem.daily.plist scripts/launchd/com.agentictradingsystem.daily.plist
+```
+The same applies whenever the repo's plist changes later: copy it, then
+reload it.
 
 ## Step-by-step: ntfy setup
 
