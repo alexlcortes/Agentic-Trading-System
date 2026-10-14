@@ -44,11 +44,12 @@ fraction of whatever was paper-validated) rather than inheriting
 RiskLimits' paper-tested default.
 """
 
+import json
 import logging
 import sys
 import time
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -89,6 +90,29 @@ CATCHUP_CUTOFF_HOUR = 16
 
 def _woke_up_too_late() -> bool:
     return datetime.now().hour < CATCHUP_CUTOFF_HOUR
+
+
+# Written once a run has gone through every ticker. 2026-09-10 ran three
+# times and 2026-10-01 twice; queued buys count as exposure so nothing
+# doubled, but each rerun re-decided every ticker and could top up positions
+# on a fresh LLM answer. A run that crashed partway never writes this, so it
+# can still be retried; `--force` reruns a completed day deliberately.
+LAST_COMPLETED_RUN_PATH = Path(__file__).parent / "logs" / "last_completed_run.json"
+
+
+def _already_ran_today() -> bool:
+    try:
+        last = json.loads(LAST_COMPLETED_RUN_PATH.read_text())["run_date"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return False
+    return last == date.today().isoformat()
+
+
+def _mark_completed() -> None:
+    LAST_COMPLETED_RUN_PATH.write_text(json.dumps({
+        "run_date": date.today().isoformat(),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }))
 
 
 # How long to wait for the network before giving up on today's run. A laptop
@@ -332,7 +356,15 @@ def _write_summary(
         f.write("\n".join(lines) + "\n")
 
 
-def run_once() -> list[dict]:
+def run_once(force: bool = False) -> list[dict]:
+    if not force and _already_ran_today():
+        logger.warning(
+            "Today's run already completed (%s) — skipping. Pass --force to run again.",
+            LAST_COMPLETED_RUN_PATH,
+        )
+        _write_summary([], skip_reason="Already ran today — skipping (pass --force to run again).")
+        return []
+
     if _woke_up_too_late():
         now = datetime.now()
         logger.warning(
@@ -424,6 +456,7 @@ def run_once() -> list[dict]:
             logger.exception("run_daily: %s failed", ticker)
             results.append({"ticker": ticker, "final_state": None, "error": str(exc)})
     results += failed
+    _mark_completed()
 
     rotation = shadow_rotation(results, limits)
     _save_proposals(results, rotation)
@@ -435,7 +468,7 @@ def run_once() -> list[dict]:
 
 if __name__ == "__main__":
     try:
-        outcomes = run_once()
+        outcomes = run_once(force="--force" in sys.argv[1:])
     except NetworkUnavailableError:
         sys.exit(1)
     if any(entry["error"] for entry in outcomes):

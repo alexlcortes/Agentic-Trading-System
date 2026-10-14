@@ -32,6 +32,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(audit_logger, "LOG_PATH", tmp_path / "trades.jsonl")
     monkeypatch.setattr(confirmation, "LAST_PROPOSALS_PATH", tmp_path / "last_proposals.json")
     monkeypatch.setattr(run_daily, "SUMMARY_LOG_PATH", tmp_path / "daily_summary.log")
+    monkeypatch.setattr(run_daily, "LAST_COMPLETED_RUN_PATH", tmp_path / "last_completed_run.json")
     monkeypatch.setattr(settings, "POSITION_REVIEW_MODE", "off")
     monkeypatch.setattr(settings, "ROTATION_MODE", "off")
 
@@ -126,8 +127,8 @@ def run(monkeypatch):
 
     monkeypatch.setattr(graph, "synthesize_decision", synthesize)
 
-    def go():
-        return broker, run_daily.run_once()
+    def go(force=False):
+        return broker, run_daily.run_once(force=force)
 
     return go
 
@@ -166,3 +167,34 @@ def test_a_failed_decision_does_not_stop_the_others(run, monkeypatch):
     broker, results = run()
     assert broker.submitted == ["ABBV", "AMT", "MSFT"]
     assert results[-1] == {"ticker": "LIN", "final_state": None, "error": "no price data"}
+
+
+def test_a_second_run_the_same_day_is_skipped(run):
+    broker, _ = run()
+    assert len(broker.submitted) == 3
+    _, results = run()
+    assert results == []
+    assert len(broker.submitted) == 3
+    assert "Already ran today" in run_daily.SUMMARY_LOG_PATH.read_text()
+
+
+def test_force_reruns_a_completed_day(run):
+    broker, _ = run()
+    _, results = run(force=True)
+    assert len(results) == 6
+
+
+def test_a_run_that_crashes_partway_can_be_retried(run, monkeypatch):
+    def crash(*_args, **_kwargs):
+        raise KeyboardInterrupt  # not caught per ticker, like a killed run
+
+    monkeypatch.setattr(run_daily, "commit_trade", crash)
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    assert not run_daily._already_ran_today()
+
+
+def test_a_marker_from_yesterday_does_not_skip(run):
+    run_daily.LAST_COMPLETED_RUN_PATH.write_text('{"run_date": "2026-10-12"}')
+    _, results = run()
+    assert len(results) == 6

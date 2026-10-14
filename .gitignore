@@ -21,6 +21,7 @@ logs/*.log
 logs/pending_orders.json
 logs/positions_meta.json
 logs/last_proposals.json
+logs/last_completed_run.json
 
 # macOS
 .DS_Store
