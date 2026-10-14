@@ -132,6 +132,20 @@ def test_a_holding_with_no_run_today_has_no_signals(monkeypatch):
     assert xom["signals"] is None
 
 
+
+def test_unanalyzed_holdings_are_recorded(monkeypatch):
+    _fake_proposal(monkeypatch, action="no_swap")
+    record = _run(results=[e for e in _results() if e["ticker"] != "XOM"])
+    assert record["unanalyzed_holdings"] == ["XOM"]
+
+
+def test_no_holding_analyzed_skips_without_a_call(monkeypatch):
+    calls = _fake_proposal(monkeypatch)
+    record = _run(results=[_blocked("MSFT")])
+    assert calls == []
+    assert record["skipped"].startswith("no holding was analyzed")
+    assert record["unanalyzed_holdings"] == HELD
+
 def test_no_swap_is_logged_without_risk_checks(monkeypatch):
     _fake_proposal(monkeypatch, action="no_swap")
     record = _run()
@@ -232,6 +246,26 @@ def test_prompt_lays_out_candidates_and_holdings(monkeypatch):
     assert "held 7 days (opened 2026-09-22)" in prompt
     assert "No signals today (not analyzed in this run)." in prompt
 
+    assert "This holding can't be sold in this proposal" in prompt
+
+
+def test_a_holding_with_no_signals_cannot_be_the_sell(monkeypatch):
+    # 2026-10-08: GOOGL's run crashed, and the model swapped it out because
+    # it "has no fresh signal today".
+    _fake_llm(monkeypatch, action="swap", sell_ticker="XOM", buy_ticker="MSFT")
+    with pytest.raises(ValueError):
+        _propose()
+
+
+def test_propose_refuses_when_no_holding_has_signals(monkeypatch):
+    sent = _fake_llm(monkeypatch, action="no_swap", sell_ticker=None, buy_ticker=None)
+    with pytest.raises(ValueError, match="no holding has signals"):
+        portfolio_manager.propose_rotation(
+            candidates=[{"ticker": "MSFT", "technical_signal": {}, "sentiment_signal": {}}],
+            holdings=[{"ticker": "XOM", "position": _position(), "signals": None}],
+            today=date(2026, 9, 29),
+        )
+    assert sent == {}
 
 def test_a_swap_comes_back_as_plain_tickers(monkeypatch):
     _fake_llm(monkeypatch, action="swap", sell_ticker="GOOGL", buy_ticker="MSFT")

@@ -390,7 +390,10 @@ def propose_rotation(candidates: list[dict], holdings: list[dict], today: date |
     blocked because the portfolio is full. candidates are
     {"ticker", "technical_signal", "sentiment_signal", "fundamentals_signal"};
     holdings are {"ticker", "position", "signals"}, where signals has the same
-    three keys or is None when the ticker had no run today. Returns
+    three keys or is None when the ticker had no run today. A holding with
+    no signals is shown but can't be named as the sell: on 2026-10-08 GOOGL's
+    run crashed, and the model swapped it out because it "has no fresh
+    signal today", reading missing data as weakness. Returns
     {"action", "sell_ticker", "buy_ticker", "confidence", "reasoning"}, with
     both tickers None unless the action is a complete swap.
     The prompt design reasoning lives in PROMPT_PATTERNS.md.
@@ -412,7 +415,11 @@ def propose_rotation(candidates: list[dict], holdings: list[dict], today: date |
                 signals["technical_signal"], signals["sentiment_signal"], signals.get("fundamentals_signal")
             )
         else:
-            prompt_sections += ["", "No signals today (not analyzed in this run)."]
+            prompt_sections += [
+                "",
+                "No signals today (not analyzed in this run). This holding can't be "
+                "sold in this proposal: missing data says nothing about its strength.",
+            ]
         prompt_sections += ["", "Position:", *_position_lines(h["position"], today)]
     prompt_sections += [
         "",
@@ -420,7 +427,10 @@ def propose_rotation(candidates: list[dict], holdings: list[dict], today: date |
         "or action='no_swap' with both left null.",
     ]
 
-    schema = _rotation_schema([c["ticker"] for c in candidates], [h["ticker"] for h in holdings])
+    sellable = [h["ticker"] for h in holdings if h.get("signals")]
+    if not sellable:
+        raise ValueError("no holding has signals today, so none can be weighed for a swap")
+    schema = _rotation_schema([c["ticker"] for c in candidates], sellable)
     client = OpenAI(
         api_key=settings.OPENAI_API_KEY,
         timeout=settings.OPENAI_TIMEOUT_SECONDS,

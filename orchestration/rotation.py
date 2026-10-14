@@ -108,10 +108,17 @@ def shadow_rotation(
         portfolio_state = get_state()
         held = portfolio_state.get("position_details") or {}
         record["holdings"] = list(held)
+        states = {e["ticker"]: e["final_state"] for e in results if not e["error"]}
+        # A holding whose run failed has no signals; propose_rotation shows it
+        # but won't let it be the sell (2026-10-08, GOOGL).
+        unanalyzed = [t for t in held if t not in states]
+        if unanalyzed:
+            record["unanalyzed_holdings"] = unanalyzed
         if len(portfolio_state["open_positions"]) < limits.max_open_positions:
             record["skipped"] = "a slot opened during the run — the portfolio is no longer full"
+        elif not any(t in states for t in held):
+            record["skipped"] = "no holding was analyzed this run — nothing to weigh the candidates against"
         else:
-            states = {e["ticker"]: e["final_state"] for e in results if not e["error"]}
             proposal = propose_rotation(
                 candidates=[{"ticker": c["ticker"], **_signals(c["final_state"])} for c in candidates],
                 holdings=[
