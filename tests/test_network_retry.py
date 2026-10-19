@@ -71,6 +71,9 @@ def test_non_network_errors_are_not_retried(monkeypatch, no_sleep):
 def test_unreachable_network_skips_the_run_with_a_summary_line(monkeypatch, no_sleep, tmp_path):
     summary = tmp_path / "daily_summary.log"
     monkeypatch.setattr(run_daily, "SUMMARY_LOG_PATH", summary)
+    # Not the real marker: once today's scheduled run completes, run_once
+    # skips before the network gate and this test failed every evening.
+    monkeypatch.setattr(run_daily, "LAST_COMPLETED_RUN_PATH", tmp_path / "last_completed_run.json")
     monkeypatch.setattr(run_daily, "_woke_up_too_late", lambda: False)
     monkeypatch.setattr(run_daily, "_startup_safety_check", lambda: True)
     monkeypatch.setattr(settings, "auto_execute", settings.auto_execute)  # run_once sets it
