@@ -60,7 +60,14 @@ def _crossover_state(sma_short: pd.Series, sma_long: pd.Series) -> str:
         return "golden_cross"  # short crossed above long — bullish
     if diff_yesterday >= 0 > diff_today:
         return "death_cross"  # short crossed below long — bearish
-    return "above" if diff_today > 0 else "below"
+    # The labels name both averages. A bare "above"/"below" was read as the
+    # price's position, or as "no bearish cross" (2026-10-19: AMT and UNH got
+    # buys from "below" read as an uptrend).
+    return "sma20_above_sma50" if diff_today > 0 else "sma20_below_sma50"
+
+
+def _price_position(close: float, sma: float) -> str:
+    return "above" if close > sma else "below"
 
 
 def _summarize_indicators(price_data: pd.DataFrame) -> dict:
@@ -79,7 +86,29 @@ def _summarize_indicators(price_data: pd.DataFrame) -> dict:
         "macd_signal_line": round(signal_line.iloc[-1], 4),
         "macd_histogram": round(histogram.iloc[-1], 4),
         "latest_close": round(close.iloc[-1], 2),
+        "close_vs_sma_20": _price_position(close.iloc[-1], sma_short.iloc[-1]),
+        "close_vs_sma_50": _price_position(close.iloc[-1], sma_long.iloc[-1]),
     }
+
+
+def _build_user_message(indicators: dict) -> str:
+    return (
+        "Technical indicators:\n"
+        f"- Latest close: {indicators['latest_close']} "
+        f"({indicators['close_vs_sma_20']} SMA(20), {indicators['close_vs_sma_50']} SMA(50))\n"
+        f"- RSI(14): {indicators['rsi_14']} "
+        "(>70 typically overbought, <30 typically oversold)\n"
+        f"- SMA(20): {indicators['sma_20']}, SMA(50): {indicators['sma_50']}\n"
+        f"- SMA crossover state: {indicators['sma_crossover_state']} "
+        "(golden_cross = SMA(20) crossed above SMA(50) today, bullish; "
+        "death_cross = SMA(20) crossed below SMA(50) today, bearish; "
+        "sma20_above_sma50 = no cross today, SMA(20) is above SMA(50), an uptrend; "
+        "sma20_below_sma50 = no cross today, SMA(20) is below SMA(50), a downtrend. "
+        "This compares the two averages to each other, not the price to them.)\n"
+        f"- MACD line: {indicators['macd_line']}, "
+        f"signal line: {indicators['macd_signal_line']}, "
+        f"histogram: {indicators['macd_histogram']}"
+    )
 
 
 def get_technical_signal(price_data: pd.DataFrame) -> dict:
@@ -119,23 +148,7 @@ def get_technical_signal(price_data: pd.DataFrame) -> dict:
                     "indicators provided."
                 ),
             },
-            {
-                "role": "user",
-                "content": (
-                    "Technical indicators:\n"
-                    f"- Latest close: {indicators['latest_close']}\n"
-                    f"- RSI(14): {indicators['rsi_14']} "
-                    "(>70 typically overbought, <30 typically oversold)\n"
-                    f"- SMA(20): {indicators['sma_20']}, SMA(50): {indicators['sma_50']}\n"
-                    f"- SMA crossover state: {indicators['sma_crossover_state']} "
-                    "(golden_cross = short crossed above long just now, bullish; "
-                    "death_cross = short crossed below long just now, bearish; "
-                    "above/below = no cross today, just current relative position)\n"
-                    f"- MACD line: {indicators['macd_line']}, "
-                    f"signal line: {indicators['macd_signal_line']}, "
-                    f"histogram: {indicators['macd_histogram']}"
-                ),
-            },
+            {"role": "user", "content": _build_user_message(indicators)},
         ],
         response_format=TechnicalSignal,
     )

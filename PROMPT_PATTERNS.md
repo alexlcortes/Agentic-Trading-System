@@ -154,4 +154,24 @@ As in the review, structure backs the prompt up:
 
 ---
 
+## 12. A label has to make sense without the code that produced it
+
+**Where:** `agents/technical_agent.py` (`_crossover_state`, `_build_user_message`)
+
+The technical agent was handed `SMA crossover state: below`, with a legend saying "above/below = no cross today, just current relative position." To whoever wrote `_crossover_state`, "below" plainly meant "SMA(20) is below SMA(50)." The model never sees that function. It sees one word with one side of the comparison named, and it filled in the other side with whatever was most prominent in the prompt. On 2026-10-19, 3 of 23 outputs contradicted themselves this way. AMT: "the 20-day SMA is below the 50-day SMA, and the current crossover state is 'below,' which indicates the short-term trend remains above the longer-term trend." UNH said the 20-day was *above* the 50-day while the state said below. Both came out as buys (0.84 and 0.79) and were the top rotation candidates that day. They were blocked only because the portfolio was full.
+
+What made it easy to misread: AMT's price had rallied back above both averages and MACD was positive, so everything else in the prompt said "up." "Relative position" doesn't say relative to what, and the price-vs-average reading fit the rest of the picture.
+
+The fix has three parts:
+
+1. **Labels name both sides:** `sma20_above_sma50` / `sma20_below_sma50`. The word can't be read as the price's position, or as "no bearish cross."
+2. **The other comparison is computed too.** The price's position against each average is now worked out in code and shown on the "Latest close" line, `(above SMA(20), above SMA(50))`. Before, the model had to compare those numbers itself, and that's pattern #2: the model was doing arithmetic, and the arithmetic was where it slipped.
+3. **The legend says what isn't being compared:** "This compares the two averages to each other, not the price to them." It also calls each state an uptrend or a downtrend, so the model doesn't have to infer what the label implies.
+
+`tests/test_technical_agent.py` builds a price series with AMT's shape (a long slide, then a rally above both averages, with SMA(20) still under SMA(50)) and checks the label and the prompt text. That test proves the prompt is no longer ambiguous. It doesn't prove the model now reads it correctly. Whether the contradictions stop has to be checked in the logged reasoning from the next few runs.
+
+**Why it matters:** an identifier in code is read alongside its definition, but in a prompt the model only has the label and whatever legend came with it. Any label that only makes sense next to the function that produced it is ambiguous to the model, and the model resolves the ambiguity toward whatever the rest of the prompt suggests, which is the worst possible direction: a misread trend that agrees with the momentum indicators looks like confirmation, not an error. The symptom was findable only because every run's reasoning is logged, holds included (pattern #7). The final answer, "buy, 0.84", looked fine; only the reasoning contradicted itself.
+
+---
+
 *(More patterns will be added here as later phases — going live — surface new ones worth naming.)*
