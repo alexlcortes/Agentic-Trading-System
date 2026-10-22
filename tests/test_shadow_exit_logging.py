@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 
 import pytest
 
@@ -8,7 +9,10 @@ from config.settings import RiskLimits
 from logs import audit_logger
 
 
-def _position(plpc, opened_at="2026-09-20"):
+def _position(plpc, opened_at=None):
+    # Relative to today: check_exit counts days held on the real clock, so a
+    # fixed date started tripping the 30-day review on 2026-10-20.
+    opened_at = opened_at or (date.today() - timedelta(days=5)).isoformat()
     entry = 100.0
     current = entry * (1 + plpc)
     return {
