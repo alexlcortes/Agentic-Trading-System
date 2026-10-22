@@ -77,15 +77,16 @@ def _summarize_indicators(price_data: pd.DataFrame) -> dict:
     sma_short, sma_long = _compute_sma_crossover(close)
     macd_line, signal_line, histogram = _compute_macd(close)
 
+    # Plain floats, not numpy scalars: this dict is logged with the signal.
     return {
-        "rsi_14": round(rsi.iloc[-1], 2),
-        "sma_20": round(sma_short.iloc[-1], 2),
-        "sma_50": round(sma_long.iloc[-1], 2),
+        "rsi_14": round(float(rsi.iloc[-1]), 2),
+        "sma_20": round(float(sma_short.iloc[-1]), 2),
+        "sma_50": round(float(sma_long.iloc[-1]), 2),
         "sma_crossover_state": _crossover_state(sma_short, sma_long),
-        "macd_line": round(macd_line.iloc[-1], 4),
-        "macd_signal_line": round(signal_line.iloc[-1], 4),
-        "macd_histogram": round(histogram.iloc[-1], 4),
-        "latest_close": round(close.iloc[-1], 2),
+        "macd_line": round(float(macd_line.iloc[-1]), 4),
+        "macd_signal_line": round(float(signal_line.iloc[-1]), 4),
+        "macd_histogram": round(float(histogram.iloc[-1]), 4),
+        "latest_close": round(float(close.iloc[-1]), 2),
         "close_vs_sma_20": _price_position(close.iloc[-1], sma_short.iloc[-1]),
         "close_vs_sma_50": _price_position(close.iloc[-1], sma_long.iloc[-1]),
     }
@@ -153,5 +154,9 @@ def get_technical_signal(price_data: pd.DataFrame) -> dict:
         response_format=TechnicalSignal,
     )
 
+    # The indicators ride along so the audit log can check the reasoning
+    # against the numbers the model was given (2026-10-19's SMA misreads were
+    # only visible as self-contradictions). Prompts downstream read only
+    # signal/confidence/reasoning.
     result = completion.choices[0].message.parsed
-    return result.model_dump()
+    return {**result.model_dump(), "indicators": indicators}
