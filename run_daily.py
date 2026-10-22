@@ -64,6 +64,7 @@ from logs.audit_logger import log_exit_check, log_reconciliation
 from orchestration.confirmation import save_current
 from orchestration.graph import commit_trade, decide_trade
 from orchestration.ranking import is_buy, rank_for_commit
+from orchestration.replay import DayRecorder
 from orchestration.rotation import blocked_candidates, shadow_rotation
 
 logging.basicConfig(
@@ -452,6 +453,8 @@ def run_once(force: bool = False) -> list[dict]:
         limits = replace(limits, max_position_pct=settings.LIVE_MAX_POSITION_PCT)
         logger.warning("Live max_position_pct overridden to %.4f", limits.max_position_pct)
 
+    # Records what this run takes from outside the code, for the golden test.
+    recorder = DayRecorder()
     exit_checks = _shadow_exit_checks(limits)
 
     # Phase 1: decide every ticker against the portfolio as it stands before
@@ -487,6 +490,7 @@ def run_once(force: bool = False) -> list[dict]:
 
     rotation = shadow_rotation(results, limits)
     _save_proposals(results, rotation)
+    recorder.save(limits, portfolio_state, decided, failed, results, rotation, exit_checks)
     _write_summary(
         results, exit_checks=exit_checks, rotation=rotation, ranking=_ranking_lines(ranked),
     )

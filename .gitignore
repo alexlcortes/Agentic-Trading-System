@@ -29,3 +29,8 @@ logs/last_completed_run.json
 # Kill switch sentinel (operational state, not code)
 /KILL_SWITCH
 logs/sentiment_calibration_*.txt
+
+# Golden test recordings (orchestration/replay.py); the chosen days are
+# copied into tests/golden/ when the snapshot is built
+logs/replay/
+logs/golden_report_*.txt

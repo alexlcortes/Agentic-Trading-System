@@ -30,6 +30,38 @@ class PortfolioDecision(BaseModel):
     reasoning: str
 
 
+# While run_daily records a day for the golden test (orchestration/replay.py),
+# every model answer is kept here as "kind:ticker" -> the parsed answer, before
+# any code clamps or overrides it. None the rest of the time.
+recorded_answers: dict | None = None
+
+
+def _parse(kind: str, ticker: str | None, system_content: str, user_content: str, response_format):
+    """One model call, returning the parsed structured answer. The replay
+    swaps this function out to feed recorded answers back in."""
+    client = OpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        timeout=settings.OPENAI_TIMEOUT_SECONDS,
+        max_retries=settings.OPENAI_MAX_RETRIES,
+    )
+    completion = client.chat.completions.parse(
+        model=settings.OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ],
+        response_format=response_format,
+    )
+    parsed = completion.choices[0].message.parsed
+    if recorded_answers is not None:
+        recorded_answers[answer_key(kind, ticker)] = parsed.model_dump(mode="json")
+    return parsed
+
+
+def answer_key(kind: str, ticker: str | None) -> str:
+    return f"{kind}:{ticker or ''}"
+
+
 def _forced_hold(ticker: str, reasoning: str) -> dict:
     """A decision made entirely in code, with no LLM call — used whenever
     the risk manager has already made the outcome a foregone conclusion.
@@ -173,21 +205,7 @@ def synthesize_decision(
         else "Your size_pct must never exceed the hard ceiling stated in the prompt."
     )
 
-    client = OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        timeout=settings.OPENAI_TIMEOUT_SECONDS,
-        max_retries=settings.OPENAI_MAX_RETRIES,
-    )
-    completion = client.chat.completions.parse(
-        model=settings.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": "\n".join(prompt_sections)},
-        ],
-        response_format=PortfolioDecision,
-    )
-
-    decision = completion.choices[0].message.parsed
+    decision = _parse("decision", ticker, system_content, "\n".join(prompt_sections), PortfolioDecision)
     result = decision.model_dump()
 
     # Never trust the LLM to have obeyed the ceiling on its own — re-validate here.
@@ -322,20 +340,7 @@ def review_position(
         "to exit the whole position or action='hold' to keep it.",
     ]
 
-    client = OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        timeout=settings.OPENAI_TIMEOUT_SECONDS,
-        max_retries=settings.OPENAI_MAX_RETRIES,
-    )
-    completion = client.chat.completions.parse(
-        model=settings.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(prompt_sections)},
-        ],
-        response_format=PositionReview,
-    )
-    review = completion.choices[0].message.parsed
+    review = _parse("review", ticker, REVIEW_SYSTEM_PROMPT, "\n".join(prompt_sections), PositionReview)
 
     return {
         "ticker": ticker,
@@ -431,20 +436,7 @@ def propose_rotation(candidates: list[dict], holdings: list[dict], today: date |
     if not sellable:
         raise ValueError("no holding has signals today, so none can be weighed for a swap")
     schema = _rotation_schema([c["ticker"] for c in candidates], sellable)
-    client = OpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        timeout=settings.OPENAI_TIMEOUT_SECONDS,
-        max_retries=settings.OPENAI_MAX_RETRIES,
-    )
-    completion = client.chat.completions.parse(
-        model=settings.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": ROTATION_SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(prompt_sections)},
-        ],
-        response_format=schema,
-    )
-    proposal = completion.choices[0].message.parsed
+    proposal = _parse("rotation", None, ROTATION_SYSTEM_PROMPT, "\n".join(prompt_sections), schema)
 
     # A swap missing either side is not a swap.
     swap = proposal.action == "swap" and proposal.sell_ticker and proposal.buy_ticker

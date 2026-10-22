@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentictradingsystem.golden-snapshot</string>
+
+    <!--
+    Runs scripts/build_golden.py, saves the report to
+    logs/golden_report_<date>.txt and posts a macOS notification. Local, not
+    a cloud routine: logs/replay/ is gitignored and only exists on this
+    machine. uv is looked up like the calibration job does.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/neuromancer/dev/agentic-trading-system &amp;&amp; out="logs/golden_report_$(date +%F).txt" &amp;&amp; if "${UV:-$(command -v uv || echo $HOME/.local/bin/uv)}" run python scripts/build_golden.py --out "$out" &gt;&gt; logs/golden.log 2&gt;&amp;1; then osascript -e "display notification \"Review $out, then commit tests/golden/\" with title \"Golden snapshot built\""; else osascript -e 'display notification "Not built — see logs/golden.log" with title "Golden snapshot"'; fi</string>
+    </array>
+
+    <!--
+    Nov 22, 17:00 local: a Sunday, so the window ends with Friday Nov 20's
+    run, about a month of recordings from Oct 22. launchd runs a fire missed
+    while asleep on wake. StartCalendarInterval repeats yearly; a second
+    build refuses to replace the snapshot without --update, so that's harmless.
+    -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Month</key><integer>11</integer>
+        <key>Day</key><integer>22</integer>
+        <key>Hour</key><integer>17</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/golden.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/neuromancer/dev/agentic-trading-system/logs/golden.log</string>
+</dict>
+</plist>
