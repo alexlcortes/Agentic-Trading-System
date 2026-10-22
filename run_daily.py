@@ -326,6 +326,24 @@ def _rotation_lines(rotation: dict | None) -> list[str]:
     return [line]
 
 
+_FORCED_HOLD_LABELS = {
+    "hold_requested": "technical hold",
+    "max_open_positions_exceeded": "portfolio full",
+    "no_existing_position_to_sell": "no position to sell",
+}
+
+
+def _confidence_text(decision: dict, risk_check: dict | None) -> str:
+    """A forced hold has confidence None on purpose (see _forced_hold in
+    agents/portfolio_manager.py): code decided it, so no model's confidence
+    exists. The summary says that and why, instead of a bare "None"."""
+    confidence = decision.get("confidence")
+    if confidence is not None:
+        return str(confidence)
+    reason_code = (risk_check or {}).get("reason_code")
+    return f"n/a (no model call: {_FORCED_HOLD_LABELS.get(reason_code, reason_code or 'forced hold')})"
+
+
 def _write_summary(
     entries: list[dict],
     skip_reason: str | None = None,
@@ -347,10 +365,11 @@ def _write_summary(
                 continue
             decision = entry["final_state"].get("portfolio_decision", {}) or {}
             execution = entry["final_state"].get("execution_result")
+            confidence = _confidence_text(decision, entry["final_state"].get("risk_check"))
             lines.append(
                 f"{entry['ticker']}: action={decision.get('action')} "
                 f"size_pct={decision.get('size_pct')} "
-                f"confidence={decision.get('confidence')} "
+                f"confidence={confidence} "
                 f"execution={execution}"
             )
 
