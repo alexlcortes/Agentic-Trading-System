@@ -13,6 +13,7 @@ from alpaca.trading.requests import MarketOrderRequest
 
 from config import settings
 from execution.position_meta import load_meta, record_entry, save_meta, sync_meta
+from execution.state_files import write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -208,9 +209,7 @@ def _load_pending() -> dict:
 
 
 def _save_pending(pending: dict) -> None:
-    PENDING_ORDERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PENDING_ORDERS_PATH, "w") as f:
-        json.dump(pending, f, indent=2)
+    write_json_atomic(PENDING_ORDERS_PATH, pending)
 
 
 def reconcile_pending_orders() -> list[dict]:

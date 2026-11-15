@@ -30,6 +30,8 @@ Lifecycle:
 import json
 from pathlib import Path
 
+from execution.state_files import write_json_atomic
+
 POSITIONS_META_PATH = Path(__file__).parent.parent / "logs" / "positions_meta.json"
 
 
@@ -41,9 +43,7 @@ def load_meta() -> dict:
 
 
 def save_meta(meta: dict) -> None:
-    POSITIONS_META_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(POSITIONS_META_PATH, "w") as f:
-        json.dump(meta, f, indent=2)
+    write_json_atomic(POSITIONS_META_PATH, meta)
 
 
 def sync_meta(meta: dict, current_prices: dict[str, float], today: str) -> dict:
