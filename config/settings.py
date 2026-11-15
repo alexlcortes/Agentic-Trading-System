@@ -22,6 +22,14 @@ OPENAI_MAX_RETRIES = int(os.getenv("OPENAI_MAX_RETRIES", "2"))
 TAVILY_TIMEOUT_SECONDS = float(os.getenv("TAVILY_TIMEOUT_SECONDS", "20"))
 TAVILY_MAX_RETRIES = int(os.getenv("TAVILY_MAX_RETRIES", "2"))
 
+# Total time one ticker's fundamentals may take: the yfinance .info fetch with
+# its retries, plus the LLM call. yfinance has no timeout setting of its own,
+# so one stalled connection can block that ticker for many minutes (a PG .info
+# call took 694s on 2026-11-11, likely while the Mac slept) and eat into the
+# wrapper's 6600s watchdog. Fundamentals are advisory, so on a timeout the
+# ticker is decided without them. A healthy fetch takes well under 10s.
+FUNDAMENTALS_TIMEOUT_SECONDS = float(os.getenv("FUNDAMENTALS_TIMEOUT_SECONDS", "90"))
+
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")

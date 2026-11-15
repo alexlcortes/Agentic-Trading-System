@@ -32,6 +32,7 @@ trades.
 """
 
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, TypedDict
@@ -98,15 +99,47 @@ def sentiment_node(state: TradingState) -> dict:
     return {"sentiment_signal": sentiment_signal}
 
 
+def _fundamentals_within_deadline(ticker: str, seconds: float) -> dict:
+    """get_fundamentals(ticker), or TimeoutError after `seconds`.
+
+    The call runs on a daemon thread, because a hung network call can't be
+    interrupted. On a timeout that thread is left to finish or hang on its
+    own, and it is daemon so it can't hold the process open at exit. (A
+    ThreadPoolExecutor's workers would: they are joined at interpreter
+    shutdown.)
+    """
+    outcome: dict = {}
+
+    def target():
+        try:
+            outcome["value"] = get_fundamentals(ticker)
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=target, name=f"fundamentals-{ticker}", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"fundamentals for {ticker} took longer than {seconds:g}s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
 def fundamentals_node(state: TradingState) -> dict:
     """A minor, advisory input (see agents/fundamentals_agent.py). Never
-    raises: a failure here leaves fundamentals out of the prompts, which is
-    how every run worked before this node existed, rather than costing the
-    ticker its run."""
+    raises: a failure or a timeout (settings.FUNDAMENTALS_TIMEOUT_SECONDS)
+    leaves fundamentals out of the prompts, which is how every run worked
+    before this node existed, rather than costing the ticker its run, or a
+    hang costing the whole run."""
+    ticker = state["ticker"]
     try:
-        return {"fundamentals_signal": get_fundamentals(state["ticker"])}
+        return {"fundamentals_signal": _fundamentals_within_deadline(ticker, settings.FUNDAMENTALS_TIMEOUT_SECONDS)}
+    except TimeoutError as exc:
+        logger.warning("%s — deciding without them", exc)
+        return {"fundamentals_signal": None}
     except Exception:
-        logger.exception("Fundamentals failed for %s — deciding without them", state["ticker"])
+        logger.exception("Fundamentals failed for %s — deciding without them", ticker)
         return {"fundamentals_signal": None}
 
 

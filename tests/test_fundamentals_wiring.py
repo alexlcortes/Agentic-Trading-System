@@ -56,3 +56,34 @@ def test_a_fundamentals_failure_still_decides_without_them(monkeypatch, pm_input
     state = _decide()
     assert pm_inputs == [None]
     assert state["portfolio_decision"]["action"] == "hold"
+
+
+def test_a_hanging_fundamentals_fetch_times_out_and_still_decides(monkeypatch, pm_inputs):
+    # yfinance .info has no timeout of its own; a PG call took 694s on
+    # 2026-11-11. A stalled fetch must not hold up the ticker or the run.
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def hangs(ticker):
+        release.wait(30)
+        return FLAG
+
+    monkeypatch.setattr(settings, "FUNDAMENTALS_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(graph, "get_fundamentals", hangs)
+    started = time.monotonic()
+    try:
+        state = _decide()
+    finally:
+        release.set()  # let the abandoned worker thread finish
+    assert time.monotonic() - started < 5
+    assert pm_inputs == [None]
+    assert state["fundamentals_signal"] is None
+    assert state["portfolio_decision"]["action"] == "hold"
+
+
+def test_a_fast_fetch_is_unaffected_by_the_deadline(monkeypatch, pm_inputs):
+    monkeypatch.setattr(settings, "FUNDAMENTALS_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(graph, "get_fundamentals", lambda t: FLAG)
+    assert _decide()["fundamentals_signal"] == FLAG
